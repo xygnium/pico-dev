@@ -66,8 +66,8 @@ that it forces one to have a deeper understanding of the system.
 
 - Compile for Linux
 
-https://forums.raspberrypi.com/viewtopic.php?t=347489
-https://github.com/libusb/hidapi?tab=readme-ov-file#installing-hidapi
+- https://forums.raspberrypi.com/viewtopic.php?t=347489
+- https://github.com/libusb/hidapi?tab=readme-ov-file#installing-hidapi
 
    git clone https://github.com/raspberrypi/openocd.git
    ls
