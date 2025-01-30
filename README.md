@@ -19,4 +19,4 @@ that it forces one to have a deeper understanding of the system.
 
 1. Getting started with Raspberry Pi Pico-series, build-date: 2024-10-15, build-version: 2b6018e-clean
 2. Programming The Raspberry Pi Pico in C, First Printing, April 2021, Revison 0, ISBN: 9781871962680
-3. [RPi microcontroller documentation] (https://www.raspberrypi.com/documentation/microcontrollers/)
+3. [RPi microcontroller documentation](https://www.raspberrypi.com/documentation/microcontrollers/)
