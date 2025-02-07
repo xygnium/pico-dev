@@ -25,42 +25,42 @@ that it forces one to have a deeper understanding of the system.
 
 ## Install Tools
 
-   sudo apt update
-   sudo apt list --upgradable
-   sudo apt upgrade
+1. sudo apt update
+1. sudo apt list --upgradable
+1. sudo apt upgrade
 
-   sudo apt install automake autoconf build-essential texinfo libtool \
+1. sudo apt install automake autoconf build-essential texinfo libtool \
    libftdi-dev libusb-1.0-0-dev pkg-config libhidapi-dev git minicom
 
-   ls -l /dev/ | grep USB
-   sudo apt remove brltty 
-   ls -l /dev/ | grep USB
+1. ls -l /dev/ | grep USB
+1. sudo apt remove brltty 
+1. ls -l /dev/ | grep USB
 
 ## Build/Load Debugprobe on Pico
 
-   git clone https://github.com/raspberrypi/debugprobe.git
-   ls
-   cd debugprobe/
-   git submodule update --init
-   mkdir build
-   cd build/
-   ls
-   ls ../../
-   export PICO_SDK_PATH=../../pico-sdk
-   cmake -DDEBUG_ON_PICO=ON -DPICO_BOARD=pico ..
-   ls
-   make
-   ls
-   ls /
-   ls /media/
-   ls /media/mike/
-   ls /media/mike/RPI-RP2/
-   cp -v debugprobe_on_pico.uf2 /media/mike/RPI-RP2/
-   ls /media/mike/RPI-RP2/
-   ls /media/mike/
+1. git clone https://github.com/raspberrypi/debugprobe.git
+1. ls
+1. cd debugprobe/
+1. git submodule update --init
+1. mkdir build
+1. cd build/
+1. ls
+1. ls ../../
+1. export PICO_SDK_PATH=../../pico-sdk
+1. cmake -DDEBUG_ON_PICO=ON -DPICO_BOARD=pico ..
+1. ls
+1. make
+1. ls
+1. ls /
+1. ls /media/
+1. ls /media/mike/
+1. ls /media/mike/RPI-RP2/
+1. cp -v debugprobe_on_pico.uf2 /media/mike/RPI-RP2/
+1. ls /media/mike/RPI-RP2/
+1. ls /media/mike/
 
-- download prog to debugger pico 
-- wire debugger pico to pico
+1. download prog to debugger pico 
+ wire debugger pico to pico
 
 ## Build/Run Openocd
 
@@ -69,17 +69,17 @@ that it forces one to have a deeper understanding of the system.
 - https://forums.raspberrypi.com/viewtopic.php?t=347489
 - https://github.com/libusb/hidapi?tab=readme-ov-file#installing-hidapi
 
-   git clone https://github.com/raspberrypi/openocd.git
-   ls
-   cd openocd/
-   ./bootstrap
-   ./configure --enable-cmsis-dap
-   make
+1. git clone https://github.com/raspberrypi/openocd.git
+1. ls
+1. cd openocd/
+1. ./bootstrap
+1. ./configure --enable-cmsis-dap
+1. make
 
-- modify /home/mike/dev/pico/openocd/tcl/target/rp2040.cfg:
-   source [find /home/mike/dev/pico/openocd/tcl/target/swj-dp.tcl]
-   #source [find <absolute path>/target/swj-dp.tcl] # my comment
-   #source [find target/swj-dp.tcl] # original line only works from openocd build dir
+	modify /home/mike/dev/pico/openocd/tcl/target/rp2040.cfg:
+	source [find /home/mike/dev/pico/openocd/tcl/target/swj-dp.tcl]
+	#source [find <absolute path>/target/swj-dp.tcl] # my comment
+	#source [find target/swj-dp.tcl] # original line only works from openocd build dir
 
 ## Use Openocd to flash pico
 
