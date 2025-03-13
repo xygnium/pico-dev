@@ -2,9 +2,10 @@
 
 A place for notes on learning Raspberry Pi pico project development.
 
-A C development environment is described because of the author's familiarity 
-with the language, and the opinion
-that it forces one to have a deeper understanding of the system.
+A C development environment on a Virtualbox Ubuntu Mate guest is described for several reasons:
+- the author's familiarity with the language and environment
+- an opinion that this method forces one to have a deeper understanding of the system
+- an opionion that open source tools are preferred
 
 # Equipment
 
@@ -81,7 +82,10 @@ modify /home/mike/dev/pico/openocd/tcl/target/rp2040.cfg:
 ## Use Openocd to flash pico
 
 - Run VB Mate/Ubuntu guest vm  
-- VB vm menu->Devices->USB-><select Raspberry Pi Debugprobe on Pico (CMSIS-DAP)[201]>  
+- Virtualbox device capture of Pico Debugprobe
+  - VB vm menu->Devices->USB-><select Raspberry Pi Debugprobe on Pico (CMSIS-DAP)[201]>
+
+![alt Virtualbox device capture of Pico Debugprobe](images/pic1.png)
 
 Command:
 
