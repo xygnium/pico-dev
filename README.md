@@ -32,6 +32,10 @@ A C development environment on a Virtualbox Ubuntu Mate guest is described for s
 1. sudo apt remove brltty  
 1. ls -l /dev/ | grep USB  
 
+# Breadboard Configuration
+
+add pic here
+
 # Build/Load Debugprobe on Pico
 
 1. git clone https://github.com/raspberrypi/debugprobe.git  
@@ -106,5 +110,16 @@ Scripted:
 	sudo $OPENOCD -s tcl -f $IF_CFG -f $TGT_CFG -c "adapter speed 5000" -c "program $PRG verify reset exit"
 
 # Serial Console Interface to pico Device Under Test
+Start minicom:
 
+	mike@xygdev3:~/dev/github/pico-dev/gmcount$ cat start_minicom.sh 
+	#!/bin/bash
+	
+	sudo minicom -D /dev/ttyACM0 -b 115200
 
+# Gieger-Muller Counter
+
+pic of dev hardware
+
+1. cd gmcount
+2. follow instructions in README.txt
