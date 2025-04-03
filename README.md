@@ -1,14 +1,15 @@
 # pico-dev
 
-A place for notes on learning Raspberry Pi pico project development.
+Notes on learning Raspberry Pi pico project development.
 
-A C development environment is described because of the author's familiarity 
-with the language, and the opinion
-that it forces one to have a deeper understanding of the system.
+A C development environment on a Virtualbox Ubuntu Mate guest is described for several reasons:
+- the author's familiarity with the language and environment
+- an opinion that this method forces one to have a deeper understanding of the system
+- an opionion that open source tools are preferred
 
 # Equipment
 
-- Dell desktop (purchased use from a vendor on Amazon)  
+- Dell Optiplex desktop (purchased used from a vendor on Amazon)  
 - several Pico 1 MCU (pico and pico W)  
 - USB to serial converters  
 - long USB cables  
@@ -21,9 +22,7 @@ that it forces one to have a deeper understanding of the system.
 2. Programming The Raspberry Pi Pico in C, First Printing, April 2021, Revison 0, ISBN: 9781871962680  
 3. [RPi microcontroller documentation](https://www.raspberrypi.com/documentation/microcontrollers/)  
 
-# Notes
-
-## Install Tools
+# Install Tools
 
 1. sudo apt update  
 1. sudo apt list --upgradable  
@@ -33,7 +32,11 @@ that it forces one to have a deeper understanding of the system.
 1. sudo apt remove brltty  
 1. ls -l /dev/ | grep USB  
 
-## Build/Load Debugprobe on Pico
+# Breadboard Configuration
+
+add pic here
+
+# Build/Load Debugprobe on Pico
 
 1. git clone https://github.com/raspberrypi/debugprobe.git  
 1. ls  
@@ -58,7 +61,7 @@ that it forces one to have a deeper understanding of the system.
 1. download prog to pico-debugger  
 2. wire pico-debugger to pico-dut  
 
-## Build/Run Openocd
+# Build/Run Openocd
 
 Compile for Linux  
 
@@ -78,10 +81,13 @@ modify /home/mike/dev/pico/openocd/tcl/target/rp2040.cfg:
 	#source [find <absolute path>/target/swj-dp.tcl] # my comment  
 	#source [find target/swj-dp.tcl] # original line only works from openocd build dir  
 
-## Use Openocd to flash pico
+# Use Openocd to flash pico Device Under Test
 
 - Run VB Mate/Ubuntu guest vm  
-- VB vm menu->Devices->USB-><select Raspberry Pi Debugprobe on Pico (CMSIS-DAP)[201]>  
+- Virtualbox device capture of Pico Debugprobe
+  - VB vm menu->Devices->USB-><select Raspberry Pi Debugprobe on Pico (CMSIS-DAP)[201]>
+
+![alt Virtualbox device capture of Pico Debugprobe](images/pic1.png)
 
 Command:
 
@@ -102,4 +108,18 @@ Scripted:
 	TGT_CFG=$OPENOCD_D/tcl/target/rp2040.cfg
 	
 	sudo $OPENOCD -s tcl -f $IF_CFG -f $TGT_CFG -c "adapter speed 5000" -c "program $PRG verify reset exit"
-`
+
+# Serial Console Interface to pico Device Under Test
+Start minicom:
+
+	mike@xygdev3:~/dev/github/pico-dev/gmcount$ cat start_minicom.sh 
+	#!/bin/bash
+	
+	sudo minicom -D /dev/ttyACM0 -b 115200
+
+# Gieger-Muller Counter
+
+pic of dev hardware
+
+1. cd gmcount
+2. follow instructions in README.txt
