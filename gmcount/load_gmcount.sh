@@ -3,7 +3,8 @@
 PICO_DEV=/home/mike/dev/pico
 
 #PRG=$PICO_DEV/pico-examples/build/blink/blink.elf
-PRG=$PICO_DEV/gmcount/build/gmcount.elf
+#PRG=$PICO_DEV/gmcount/build/gmcount.elf
+PRG=$HOME/dev/github/pico-dev/gmcount/build/gmcount.elf
 
 OPENOCD_D=$PICO_DEV/openocd
 OPENOCD=$OPENOCD_D/src/openocd
