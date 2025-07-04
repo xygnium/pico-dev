@@ -22,6 +22,12 @@
 *.la
 *.lo
 
+# Build dir
+**/build
+
+# vim files
+*.swp
+
 # Shared objects (inc. Windows DLLs)
 *.dll
 *.so
