@@ -81,27 +81,40 @@ modify /home/mike/dev/pico/openocd/tcl/target/rp2040.cfg:
 	#source [find <absolute path>/target/swj-dp.tcl] # my comment  
 	#source [find target/swj-dp.tcl] # original line only works from openocd build dir  
 
-# Use Openocd to flash pico Device Under Test
-
+# Capture Pico Debugprobe USB in Virtualbox guest
 - Run VB Mate/Ubuntu guest vm  
 - Virtualbox device capture of Pico Debugprobe
   - VB vm menu->Devices->USB-><select Raspberry Pi Debugprobe on Pico (CMSIS-DAP)[201]>
 
 ![alt Virtualbox device capture of Pico Debugprobe](images/pic1.png)
 
+# Serial Console Interface to pico Device Under Test
+Start minicom before loading program:
+
+	mike@xygdev3:~/dev/github/pico-dev/gmcount$ cat start_minicom.sh 
+	#!/bin/bash
+
+  	# use ttyACM0 for serial via Pico Debugprobe
+	sudo minicom -D /dev/ttyACM0 -b 115200
+
+ 	# use ttyUBS0 for serial via USB-serial dongle
+ 	#sudo minicom -D /dev/ttyUSB0 -b 115200
+
+# Use Openocd to flash pico Device Under Test
 Command:
 
-mike@xygdev3:~/dev/pico/openocd$ sudo src/openocd -s tcl -f tcl/interface/cmsis-dap.cfg -f tcl/target/rp2040.cfg -c "adapter speed 5000" -c "program ../pico-examples/build/blink/blink.elf verify reset exit"
+	mike@xygdev3:~/dev/pico/openocd$ sudo src/openocd -s tcl -f tcl/interface/cmsis-dap.cfg -f tcl/target/rp2040.cfg -c "adapter speed 5000" -c "program <path to .elf file> verify reset exit"
 
 Scripted:
 
-	mike@xygdev3:~/dev$ cat /home/mike/dev/pico/openocd/loadprog.sh
-	#~/bin/bash
+ 	#~/bin/bash
 	
+	#PRG=$PICO_DEV/pico-examples/build/blink/blink.elf
+	#PRG=$PICO_DEV/gmcount/build/gmcount.elf
+	#PRG=$HOME/dev/github/pico-dev/gmcount/build/gmcount.elf
+	PRG=$HOME/dev/github/pico-dev/scsd/build/simple_example.elf
+
 	PICO_DEV=/home/mike/dev/pico
-	
-	PRG=$PICO_DEV/pico-examples/build/blink/blink.elf
-	
 	OPENOCD_D=$PICO_DEV/openocd
 	OPENOCD=$OPENOCD_D/src/openocd
 	IF_CFG=$OPENOCD_D/tcl/interface/cmsis-dap.cfg
@@ -109,13 +122,52 @@ Scripted:
 	
 	sudo $OPENOCD -s tcl -f $IF_CFG -f $TGT_CFG -c "adapter speed 5000" -c "program $PRG verify reset exit"
 
-# Serial Console Interface to pico Device Under Test
-Start minicom:
+Sample output:
 
-	mike@xygdev3:~/dev/github/pico-dev/gmcount$ cat start_minicom.sh 
-	#!/bin/bash
+	mike@xygdev3:~/dev/github/pico-dev/scsd$ ./load_scsd.sh 
+	[sudo] password for mike: 
+	Open On-Chip Debugger 0.12.0+dev-gebec9504d-dirty (2025-03-31-19:17)
+	Licensed under GNU GPL v2
+	For bug reports, read
+		http://openocd.org/doc/doxygen/bugs.html
+	Info : Hardware thread awareness created
+	Info : Hardware thread awareness created
+	adapter speed: 5000 kHz
+	Info : Using CMSIS-DAPv2 interface with VID:PID=0x2e8a:0x000c, serial=E6605481DB511B35
+	Info : CMSIS-DAP: SWD supported
+	Info : CMSIS-DAP: Atomic commands supported
+	Info : CMSIS-DAP: Test domain timer supported
+	Info : CMSIS-DAP: FW Version = 2.0.0
+	Info : CMSIS-DAP: Interface Initialised (SWD)
+	Info : SWCLK/TCK = 0 SWDIO/TMS = 0 TDI = 0 TDO = 0 nTRST = 0 nRESET = 0
+	Info : CMSIS-DAP: Interface ready
+	Info : clock speed 5000 kHz
+	Info : SWD DPIDR 0x0bc12477, DLPIDR 0x00000001
+	Info : SWD DPIDR 0x0bc12477, DLPIDR 0x10000001
+	Info : [rp2040.core0] Cortex-M0+ r0p1 processor detected
+	Info : [rp2040.core0] target has 4 breakpoints, 2 watchpoints
+	Info : [rp2040.core0] Examination succeed
+	Info : [rp2040.core1] Cortex-M0+ r0p1 processor detected
+	Info : [rp2040.core1] target has 4 breakpoints, 2 watchpoints
+	Info : [rp2040.core1] Examination succeed
+	Info : starting gdb server for rp2040.core0 on 3333
+	Info : Listening on port 3333 for gdb connections
+	[rp2040.core0] halted due to breakpoint, current mode: Thread 
+	xPSR: 0xf1000000 pc: 0x000000ea msp: 0x20041f00
+	[rp2040.core1] halted due to debug-request, current mode: Thread 
+	xPSR: 0xf1000000 pc: 0x000000ea msp: 0x20041f00
+	** Programming Started **
+	Warn : Function FUNC_BOOTROM_STATE_RESET not found in RP2xxx ROM. (probably an RP2040 or an RP2350 A0)
+	Warn : Function FUNC_FLASH_RESET_ADDRESS_TRANS not found in RP2xxx ROM. (probably an RP2040 or an RP2350 A0)
+	Info : RP2040 Flash Probe: 33554432 bytes @0x10000000, in 8192 sectors
 	
-	sudo minicom -D /dev/ttyACM0 -b 115200
+	Info : Padding image section 1 at 0x1000e5a8 with 88 bytes (bank write end alignment)
+	Warn : Adding extra erase range, 0x1000e600 .. 0x1000efff
+	** Programming Finished **
+	** Verify Started **
+	** Verified OK **
+	** Resetting Target **
+	shutdown command invoked
 
 # Gieger-Muller Counter
 
