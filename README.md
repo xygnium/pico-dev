@@ -169,6 +169,19 @@ Sample output:
 	** Resetting Target **
 	shutdown command invoked
 
+# Pulseview Setup 
+1. sudo apt install -y libsigrok-dev
+1. sudo apt install sigrok-firmware-fx2lafw
+2. sudo apt install -y pulseview
+4. VB vm: attach USB in Devices->USB->sigrok fx2lafw
+3. enter: pulseview
+4. connect to device
+5. choose driver: fx2lafw
+6. choose interface: USB
+7. scan for device
+8. select: Saleae Logic with 8 channels
+9. press OK
+
 # Gieger-Muller Counter
 
 pic of dev hardware
