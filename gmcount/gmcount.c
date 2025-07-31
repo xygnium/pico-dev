@@ -1,6 +1,9 @@
 #include <stdio.h>
 #include "pico/stdlib.h"
 
+//extern "C" void init_FatFs(void);
+extern void init_FatFs(void);
+
 int main() {
    stdio_init_all();
    int count = 1;

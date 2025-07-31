@@ -24,6 +24,7 @@ add_subdirectory(/home/mike/dev/pico/no-OS-FatFS-SD-SPI-RPi-Pico/FatFs_SPI build
 add_executable(simple_example 
     simple_example.cpp
     hw_config.c
+    fatfs.c
 )
 
 # Add the standard library and FatFS/SPI to the build
