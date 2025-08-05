@@ -3,6 +3,8 @@
 
 //extern "C" void init_FatFs(void);
 extern void init_FatFs(void);
+extern void close_FatFs(void);
+extern void listFiles(void);
 
 int main() {
    stdio_init_all();
@@ -17,7 +19,12 @@ int main() {
    gpio_set_dir(22, GPIO_IN);
    //gpio_pull_up(22);
 
-   printf("---- Hello, world ----\n");
+   printf("---- init_FatFs ---\n");
+   init_FatFs();
+   printf("---- list files ----\n");
+   listFiles();
+   printf("---- close_FatFs ---\n");
+   close_FatFs();
 
     /*
     while (1) {
