@@ -38,28 +38,23 @@ add pic here
 
 # Build/Load Debugprobe on Pico RP2040
 
-1. git clone https://github.com/raspberrypi/debugprobe.git  
+1. cd /home/dev/mike/pico
+2. git clone https://github.com/raspberrypi/debugprobe.git (skip if exists)
 1. ls  
 1. cd debugprobe/  
+1. git pull (skip if cloned above)
 1. git submodule update --init  
 1. mkdir build  
 1. cd build/  
-1. ls  
-1. ls ../../  
 1. export PICO_SDK_PATH=../../pico-sdk  
 1. cmake -DDEBUG_ON_PICO=ON -DPICO_BOARD=pico ..  
-1. ls  
 1. make  
-1. ls  
-1. ls /  
-1. ls /media/  
-1. ls /media/mike/  
-1. ls /media/mike/RPI-RP2/  
-1. cp -v debugprobe_on_pico.uf2 /media/mike/RPI-RP2/  
-1. ls /media/mike/RPI-RP2/  
-1. ls /media/mike/  
-1. download prog to pico-debugger using BOOTSEL method  
-2. wire pico-debugger to DUT  
+1. ls *uf2 (confirm debugprobe_on_pico.uf2)
+2. load uf2 file using BOOTSEL method
+    1. ls /media/mike/RPI-RP2/  
+    1. cp -v debugprobe_on_pico.uf2 /media/mike/RPI-RP2/
+    2. observe LED illuminated on RP2040
+2. connect pico-debugger to DUT  
 
 # Build/Run Openocd
 
