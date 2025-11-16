@@ -36,7 +36,7 @@ A C development environment on a Virtualbox Ubuntu Mate guest is described for s
 
 add pic here
 
-# Build/Load Debugprobe on Pico
+# Build/Load Debugprobe on Pico RP2040
 
 1. git clone https://github.com/raspberrypi/debugprobe.git  
 1. ls  
@@ -59,7 +59,7 @@ add pic here
 1. ls /media/mike/RPI-RP2/  
 1. ls /media/mike/  
 1. download prog to pico-debugger using BOOTSEL method  
-2. wire pico-debugger to pico-dut  
+2. wire pico-debugger to DUT  
 
 # Build/Run Openocd
 
@@ -100,18 +100,15 @@ Start minicom before loading program:
  	# use ttyUBS0 for serial via USB-serial dongle
  	#sudo minicom -D /dev/ttyUSB0 -b 115200
 
-# Use Openocd to flash pico Device Under Test
+# Use Openocd to flash pico RP2040 Device Under Test
 Command:
 
 	mike@xygdev3:~/dev/pico/openocd$ sudo src/openocd -s tcl -f tcl/interface/cmsis-dap.cfg -f tcl/target/rp2040.cfg -c "adapter speed 5000" -c "program <path to .elf file> verify reset exit"
 
 Scripted:
 
- 	#~/bin/bash
+ 	#!/bin/bash
 	
-	#PRG=$PICO_DEV/pico-examples/build/blink/blink.elf
-	#PRG=$PICO_DEV/gmcount/build/gmcount.elf
-	#PRG=$HOME/dev/github/pico-dev/gmcount/build/gmcount.elf
 	PRG=$HOME/dev/github/pico-dev/scsd/build/simple_example.elf
 
 	PICO_DEV=/home/mike/dev/pico
@@ -120,7 +117,12 @@ Scripted:
 	IF_CFG=$OPENOCD_D/tcl/interface/cmsis-dap.cfg
 	TGT_CFG=$OPENOCD_D/tcl/target/rp2040.cfg
 	
-	sudo $OPENOCD -s tcl -f $IF_CFG -f $TGT_CFG -c "adapter speed 5000" -c "program $PRG verify reset exit"
+	sudo $OPENOCD \
+	    -s tcl \
+		-f $IF_CFG \
+		-f $TGT_CFG \
+		-c "adapter speed 5000" \
+		-c "program $PRG verify reset exit"   
 
 Sample output:
 
