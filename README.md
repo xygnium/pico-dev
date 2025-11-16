@@ -58,7 +58,7 @@ add pic here
 1. cp -v debugprobe_on_pico.uf2 /media/mike/RPI-RP2/  
 1. ls /media/mike/RPI-RP2/  
 1. ls /media/mike/  
-1. download prog to pico-debugger  
+1. download prog to pico-debugger using BOOTSEL method  
 2. wire pico-debugger to pico-dut  
 
 # Build/Run Openocd
