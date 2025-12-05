@@ -16,7 +16,7 @@ add_executable(main
 target_include_directories(main PRIVATE ${CMAKE_CURRENT_LIST_DIR})
 target_link_libraries(main
     pico_stdlib
-    pico_cyw43_arch_lwip_threadsafe_background
+    #pico_cyw43_arch_lwip_threadsafe_background
 )
 
 pico_set_program_name(main "main")
