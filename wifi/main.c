@@ -7,13 +7,21 @@ int setup(uint32_t country, const char *ssid, const char *pass,  uint32_t auth)
   printf("wifi setup\n");
   if (cyw43_arch_init_with_country(country))
   {
+    // fail
     return 1;
   }
   cyw43_arch_enable_sta_mode();
   if (cyw43_arch_wifi_connect_blocking(ssid, pass, auth))
   {
+    // fail
     return 2;
   }
+  char *ip4addr_sp = ip4addr_ntoa(netif_ip_addr4(netif_default));
+  printf("IP: %s\n", ip4addr_sp);
+  printf("Mask: %s\n", ip4addr_ntoa(netif_ip_netmask4(netif_default)));
+  printf("Gateway: %s\n", ip4addr_ntoa(netif_ip_gw4(netif_default)));
+  printf("Host Name: %s\n", netif_get_hostname(netif_default));    
+  return 0;
 }
 
 char ssid[] = "abzu2";
@@ -26,11 +34,6 @@ int main()
     stdio_init_all();
     printf("init stdio complete\n");
     setup(country, ssid, pass, auth);
-    char *ip4addr_sp = ip4addr_ntoa(netif_ip_addr4(netif_default));
-    printf("IP: %s\n", ip4addr_sp);
-    printf("Mask: %s\n", ip4addr_ntoa(netif_ip_netmask4(netif_default)));
-    printf("Gateway: %s\n", ip4addr_ntoa(netif_ip_gw4(netif_default)));
-    printf("Host Name: %s\n", netif_get_hostname(netif_default));    
     printf("forever loop\n");
     while (true)
     {
