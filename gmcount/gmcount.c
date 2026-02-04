@@ -6,8 +6,12 @@ extern void init_FatFs(void);
 extern void close_FatFs(void);
 extern void listFiles(void);
 
+extern int udp_setup(void);
+extern int udp_recv_send(void);
+
 int main() {
    stdio_init_all();
+   udp_setup();
    int count = 1;
 
    //gpio_init(21);
@@ -49,6 +53,7 @@ int main() {
         // transition from lo to hi detected
         printf("count=%d\n", count);
         count++;
+        udp_recv_send();
         printf("hi\n");
         while (gpio_get(22) == 1) {};
     }

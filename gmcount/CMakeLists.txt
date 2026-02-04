@@ -11,17 +11,20 @@ add_executable(gmcount
     gmcount.c
     hw_config.c
     fatfs.c
+    wifi.c
 )
 
-# Add the standard library and FatFS/SPI to the build
+target_include_directories(gmcount PRIVATE ${CMAKE_CURRENT_LIST_DIR})
+
 target_link_libraries(gmcount
     pico_stdlib
     FatFs_SPI
+    pico_cyw43_arch_lwip_threadsafe_background
 )
 
 pico_set_program_name(gmcount "gmcount")
-pico_set_program_version(gmcount "0.2")
+pico_set_program_version(gmcount "0.3")
 
-#pico_enable_stdio_usb(gmcount 1)
+pico_enable_stdio_usb(gmcount 0)
 pico_enable_stdio_uart(gmcount 1)
 pico_add_extra_outputs(gmcount)

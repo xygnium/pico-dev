@@ -11,6 +11,7 @@ pico_sdk_init()
 
 add_executable(main
  main.c
+ wifi.c
 )
 
 target_include_directories(main PRIVATE ${CMAKE_CURRENT_LIST_DIR})
