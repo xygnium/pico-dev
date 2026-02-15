@@ -186,7 +186,15 @@ Sample output:
 5. select: Saleae Logic with 8 channels
 6. press OK
 
-# Gieger-Muller Counter
+# Gieger-M&#252;ller Counter
+This project is a data logger that counts radioactive particles and captures time of day for each count.
+
+The system is comprised of a Pico W, a Geiger-M&#252;ller board, an SPSD card, and a RTC with battery backup.
+
+1. https://www.aliexpress.us/item/3256804822706852.html
+2. https://youtu.be/4Tqo3B98ZgM?si=9gaJMQFN2oA8annz
+3. Harry Fairhead Pico C books
+4. https://github.com/carlk3/no-OS-FatFS-SD-SPI-RPi-Pico
 
 pic of dev hardware
 
