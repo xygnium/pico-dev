@@ -45,6 +45,7 @@ https://forums.raspberrypi.com/viewtopic.php?t=393873
 1. ls  
 1. cd debugprobe/  
 1. git pull (skip if cloned above)
+2. check version: grep -R Version src | grep bcdDevice (using Version 02.23)
 1. git submodule update --init  
 1. mkdir build  
 1. cd build/  
