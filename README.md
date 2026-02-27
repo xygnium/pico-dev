@@ -37,8 +37,10 @@ A C development environment on a Virtualbox Ubuntu Mate guest is described for s
 add pic here
 
 # Build/Load Debugprobe on Pico RP2040
+Encountered a problem with debugprobe with a RP2350 device under test. The problem disappeared while I was chasing it. It is described here:
+https://forums.raspberrypi.com/viewtopic.php?t=393873
 
-1. cd /home/dev/mike/pico
+1. cd $HOME/dev/pico
 2. git clone https://github.com/raspberrypi/debugprobe.git (skip if exists)
 1. ls  
 1. cd debugprobe/  
