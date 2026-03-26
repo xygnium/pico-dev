@@ -45,7 +45,7 @@ int example_ds3231() {
     };
 
     // This will use the above information to set the date and time.
-    ds3231_set_datetime(&dt, &rtc);
+    //ds3231_set_datetime(&dt, &rtc);
 
     // This is a character array that will be used for storing a string
     // representation of the date and time.
