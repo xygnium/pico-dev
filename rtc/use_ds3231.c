@@ -22,7 +22,7 @@ below for more details.
 #define DS3231_I2C_SCL_PIN 27
 
 int example_ds3231() {
-    stdio_init_all();
+    //stdio_init_all();
 
     // Create a real-time clock structure and initiate this.
     struct ds3231_rtc rtc;

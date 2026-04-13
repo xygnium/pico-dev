@@ -12,6 +12,7 @@ add_executable(gmcount
     hw_config.c
     fatfs.c
     wifi.c
+    api_ds3231.c
 )
 
 target_include_directories(gmcount PRIVATE ${CMAKE_CURRENT_LIST_DIR})
@@ -19,6 +20,7 @@ target_include_directories(gmcount PRIVATE ${CMAKE_CURRENT_LIST_DIR})
 target_link_libraries(gmcount
     pico_stdlib
     FatFs_SPI
+    hardware_i2c
     pico_cyw43_arch_lwip_threadsafe_background
 )
 
