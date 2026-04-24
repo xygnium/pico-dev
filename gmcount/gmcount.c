@@ -1,4 +1,5 @@
 #include <stdio.h>
+
 #include "pico/stdlib.h"
 #include "hardware/i2c.h"
 
@@ -9,7 +10,8 @@
 #define DS3231_I2C_SDA_PIN 26
 #define DS3231_I2C_SCL_PIN 27
 
-//extern "C" void init_FatFs(void);
+// --- external function declaration ---
+
 extern void init_FatFs(void);
 extern void close_FatFs(void);
 extern void listFiles(void);
@@ -17,19 +19,37 @@ extern void listFiles(void);
 extern int udp_setup(void);
 extern int udp_recv_send(void);
 
+// --- global variables ---
+
+volatile int count = 1;
+
+// --------------------------------------------
+// Callback function triggered by the interrupt
+void gpio_callback(uint gpio, uint32_t events) {
+    if (events & GPIO_IRQ_EDGE_RISE) {
+        //printf("ISR:GPIO %d went High!\n", gpio);
+	count++;
+    }
+}
+
+// --------------------------------------------
 int main() {
    stdio_init_all();
    udp_setup();
-   int count = 1;
+   const uint INPUT_PIN = 22;
 
-   //gpio_init(21);
-   //gpio_set_function(21, GPIO_FUNC_SIO);
-   //gpio_set_dir(21, GPIO_OUT);
+   gpio_init(INPUT_PIN);
+   // gpio_set_function() call is redundant; called by gpio_init()
+   gpio_set_function(INPUT_PIN, GPIO_FUNC_SIO);
+   gpio_set_dir(INPUT_PIN, GPIO_IN);
+   //gpio_pull_up(INPUT_PIN);
 
-   gpio_init(22);
-   gpio_set_function(22, GPIO_FUNC_SIO);
-   gpio_set_dir(22, GPIO_IN);
-   //gpio_pull_up(22);
+    // Set up the interrupt for a rising edge (low to high)
+    gpio_set_irq_enabled_with_callback(
+		    INPUT_PIN,
+		    GPIO_IRQ_EDGE_RISE,
+		    true,
+		    &gpio_callback);
 
    printf("---- init_FatFs ---\n");
    init_FatFs();
@@ -40,15 +60,15 @@ int main() {
 
     /*
     while (1) {
-        // Read the state of GPIO pin 22
-        int pin_state = gpio_get(22);
+        // Read the state of GPIO pin INPUT_PIN
+        int pin_state = gpio_get(INPUT_PIN);
 
         if (pin_state == 1) {
-            // Pin 22 is HIGH
-            printf("Pin 22 is HIGH\n");
+            // Pin INPUT_PIN is HIGH
+            printf("Pin INPUT_PIN is HIGH\n");
         } else {
-            // Pin 22 is LOW
-            printf("Pin 22 is LOW\n");
+            // Pin INPUT_PIN is LOW
+            printf("Pin INPUT_PIN is LOW\n");
         }
         // Add a delay (optional)
         sleep_ms(1000);
@@ -71,9 +91,10 @@ int main() {
     // representation of the date and time.
     uint8_t dt_str[25];
 
+    /*
     while (true) {
         printf("lo\n");
-        while (gpio_get(22) == 0) {};
+        while (gpio_get(INPUT_PIN) == 0) {};
         // transition from lo to hi detected
         printf("count=%d\n", count);
         count++;
@@ -84,7 +105,19 @@ int main() {
         puts(dt_str);
         udp_recv_send();
         printf("hi\n");
-        while (gpio_get(22) == 1) {};
+        while (gpio_get(INPUT_PIN) == 1) {};
+    }
+    */
+
+    while (true) {
+        // Read the date and time from the DS3231 RTC.
+        ds3231_get_datetime(&dt, &rtc);
+        // Convert the dt structure to a string and print this.
+        ds3231_ctime(dt_str, sizeof(dt_str), &dt);
+        puts(dt_str);
+        udp_recv_send();
+        printf("count=%d\n", count);
+        sleep_ms(5000);
     }
 }
 
