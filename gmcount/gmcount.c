@@ -21,14 +21,23 @@ extern int udp_recv_send(void);
 
 // --- global variables ---
 
-volatile int count = 1;
+volatile int count_per_interval = 0;
+volatile int count_per_interval_report = 0;
+volatile int count_total = 0;
+volatile bool report_interval_count = false;
 
 // --------------------------------------------
 // Callback function triggered by the interrupt
 void gpio_callback(uint gpio, uint32_t events) {
     if (events & GPIO_IRQ_EDGE_RISE) {
         //printf("ISR:GPIO %d went High!\n", gpio);
-	count++;
+	count_total++;
+	count_per_interval++;
+	if (report_interval_count) {
+		report_interval_count = false;
+		count_per_interval_report = count_per_interval;
+		count_per_interval = 0;
+	}
     }
 }
 
@@ -109,15 +118,22 @@ int main() {
     }
     */
 
+    int count_test_accum = 0;
     while (true) {
+        sleep_ms(5000);
+	report_interval_count = true;
+	while (report_interval_count);
+	count_test_accum += count_per_interval_report;
         // Read the date and time from the DS3231 RTC.
         ds3231_get_datetime(&dt, &rtc);
         // Convert the dt structure to a string and print this.
         ds3231_ctime(dt_str, sizeof(dt_str), &dt);
         puts(dt_str);
+        printf("count_total=%d, count_per_interval_report=%d, count_test_accum=%d\n", 
+			count_total, 
+			count_per_interval_report,
+			count_test_accum);
         udp_recv_send();
-        printf("count=%d\n", count);
-        sleep_ms(5000);
     }
 }
 
