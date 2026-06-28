@@ -42,6 +42,34 @@ void gpio_callback(uint gpio, uint32_t events) {
 }
 
 // --------------------------------------------
+void calc_count_average(int count) {
+	static int count_array[10];
+	static int i=0;
+	static bool filled=false;
+
+	if (i >= 10) {
+		i = 0;
+	}
+
+	count_array[i] = count;
+	i++;
+
+	if (! filled) {
+		printf("i=%d\n", i);
+		if (i == 9) {
+			filled = true;
+		} else return;
+	}
+
+	int sum=0;
+	for (int i = 0; i < 10; i++) {
+		sum += count_array[i];
+	}
+	int avg = sum/10;
+	printf("avg=%d\n", avg);
+}
+
+// --------------------------------------------
 int main() {
    stdio_init_all();
    udp_setup();
@@ -133,6 +161,7 @@ int main() {
 			count_total, 
 			count_per_interval_report,
 			count_test_accum);
+	calc_count_average(count_per_interval_report);
         udp_recv_send();
     }
 }

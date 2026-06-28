@@ -3,9 +3,9 @@
 
 #include "f_util.h"
 #include "ff.h"
-//#include "pico/stdlib.h"
 #include "rtc.h"
 
+// SD card config
 #include "hw_config.h"
 
 static sd_card_t *pSD;
