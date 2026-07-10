@@ -2,33 +2,17 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Current status
-
-This project gets worked on in short, irregular sessions, so keep this
-section up to date as a "where I left off" note — update it at the end of a
-session rather than trying to reconstruct state from git log next time.
-
-- **Last updated:** 2026-07-10
-- **Doing now:** wiring up gmcount's real-time data collection path (pulse
-  counting → RTC-timestamped records → SD logging).
-- **Known gap:** `gmcount/fatfs.c` (`init_FatFs`) currently just mounts the
-  SD card, appends a fixed `"Hello, world!"` line to `filename.txt`, and
-  unmounts — it does not yet write real per-count records. That's the next
-  piece of the pipeline to build.
-- **Next up:** (nothing queued yet — update this when you pick a next step)
-
 ## Repository overview
 
-`gmcount/` is the main project — a Geiger-Müller particle counter/real-time
-data logger for a Pico W (GPIO pulse counting + DS3231 RTC timestamping + SD
-card logging + WiFi/UDP). The other top-level directories are sub-component
-testbeds: each isolates one of gmcount's subsystems in its own standalone
-CMake project so it can be developed/debugged independently before (or while)
-being folded into `gmcount/`. There is no single build for the whole repo —
-each directory builds and flashes separately, and code is copied in rather
-than shared as a library (see "Shared/duplicated files" below).
+Each top-level directory is an independent Pico SDK/CMake project — its own
+executable, built and flashed separately. There is no single repo-wide build.
+This file covers conventions shared across all projects (external deps,
+build/flash/serial patterns); project-specific architecture and "current
+status" notes live in that project's own `CLAUDE.md`, which Claude Code loads
+automatically alongside this one when you're working in that directory.
 
-- `gmcount/` — the main project (see architecture notes below).
+- `gmcount/` — the main project: a Geiger-Müller particle counter/real-time
+  data logger for a Pico W. See `gmcount/CLAUDE.md`.
 - `rtc/` — testbed for the DS3231 RTC driver (`api_ds3231.c/h`), which
   gmcount uses for timestamping.
 - `sdsc/` — testbed for SD-card-over-SPI (FatFs) logging, which gmcount uses
@@ -37,10 +21,7 @@ than shared as a library (see "Shared/duplicated files" below).
   which gmcount uses for its command/response interface.
 - `wifi2/` — bring-up testbed for the Pico2 W / RP2350 platform; WiFi code is
   present but currently commented out. Not yet integrated into gmcount.
-
-Current focus: building out gmcount's real-time data collection path (pulse
-counting → RTC-timestamped records → SD logging), so changes to `rtc/`,
-`sdsc/`, or `wifi/` are generally in service of that, not standalone goals.
+- `temp/` — new project, not yet fleshed out. See `temp/CLAUDE.md`.
 
 See `README.md` for hardware setup (debugprobe, openocd build, minicom,
 sigrok/pulseview) — that's reference material for the physical dev
@@ -128,45 +109,3 @@ notes if developing in a VM).
 `sudo minicom -D /dev/ttyACM0 -b 115200` (debug probe) — an alternate line for
 `/dev/ttyUSB0` (USB-serial dongle) is present but commented out. Start
 minicom *before* flashing so early boot output isn't missed.
-
-## Architecture notes
-
-**gmcount** (the flagship project) wires together four subsystems in
-`gmcount.c`:
-- **Pulse counting**: a GPIO interrupt (`gpio_callback`, rising edge on GPIO
-  22) increments `count_total`/`count_per_interval` from ISR context. The
-  main loop hands off a snapshot every 5s via the
-  `report_interval_count` / `count_per_interval_report` flag-and-copy
-  handshake (not a mutex) — keep that pattern in mind if touching the ISR or
-  the reporting loop, it's how the two contexts stay in sync.
-- **RTC timestamping**: DS3231 over I2C1 (SDA=GPIO26, SCL=GPIO27), via
-  `api_ds3231.c/h`.
-- **SD logging**: FatFs over SPI0 (SCK=18, MOSI=19, MISO=16, CS=17), wired up
-  in `hw_config.c` (SPI/SD hardware description) and `fatfs.c`
-  (`init_FatFs`/`close_FatFs`/`listFiles`). Currently just mounts, appends a
-  fixed "Hello, world!" line to `filename.txt`, and unmounts — this is a
-  placeholder, not the real logging path yet.
-- **WiFi/UDP**: `wifi.c` brings up the Pico W (`cyw43_arch`) with hardcoded
-  SSID/password/auth constants at file scope, then listens for UDP commands
-  on port 8080 and replies with a canned response. Don't change the
-  credentials without checking with the user — they're real network config,
-  not placeholders.
-
-**Shared/duplicated files, not a common library**: `api_ds3231.c/h` (DS3231
-driver, BSD-3-licensed, upstream by Antonio González) is copied verbatim into
-both `gmcount/` and `rtc/`. `hw_config.c`/`fatfs.c` (SD/FatFs glue, Apache-2.0,
-upstream carlk3/no-OS-FatFS-SD-SPI-RPi-Pico pattern) are copied with minor
-variations into `gmcount/` and `sdsc/` — `gmcount`'s version adds
-`close_FatFs`/`listFiles`/`ls` on top of the base example. When fixing a bug
-in one copy, check whether the same bug exists in the sibling copy; they are
-not symlinked or built as a shared library.
-
-**rtc/** is the driver testbed: `rtc.c` is a minimal main that calls into
-`use_ds3231.c`'s `example_ds3231()`, which exercises the same `api_ds3231`
-API gmcount uses. Useful reference for expected DS3231 usage before changing
-the shared driver.
-
-**wifi/ vs wifi2/**: `wifi/` is a working Pico W UDP client/server. `wifi2/`
-is a newer, RP2350/Pico2 W bring-up target — its `main.c` has the equivalent
-WiFi/UDP setup present but commented out, currently just prints a heartbeat
-in a loop. Treat `wifi2` as in-progress platform bring-up, not a regression.
