@@ -21,7 +21,9 @@ automatically alongside this one when you're working in that directory.
   which gmcount uses for its command/response interface.
 - `wifi2/` — bring-up testbed for the Pico2 W / RP2350 platform; WiFi code is
   present but currently commented out. Not yet integrated into gmcount.
-- `temp/` — new project, not yet fleshed out. See `temp/CLAUDE.md`.
+- `temp-sense/` — new project: a DS18B20 temperature sensor data logger,
+  same shape as gmcount (sensor → RTC-timestamped record → SD/WiFi). Not yet
+  scaffolded. See `temp-sense/CLAUDE.md`.
 
 See `README.md` for hardware setup (debugprobe, openocd build, minicom,
 sigrok/pulseview) — that's reference material for the physical dev
