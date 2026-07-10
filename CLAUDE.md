@@ -4,20 +4,28 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository overview
 
-This is a personal collection of Raspberry Pi Pico (RP2040 / RP2350) firmware
-projects, written in C/C++ against the Pico SDK. There is no single build for
-the whole repo — each top-level directory (`gmcount/`, `rtc/`, `sdsc/`,
-`wifi/`, `wifi2/`) is an independent CMake project with its own executable,
-built and flashed separately.
+`gmcount/` is the main project — a Geiger-Müller particle counter/real-time
+data logger for a Pico W (GPIO pulse counting + DS3231 RTC timestamping + SD
+card logging + WiFi/UDP). The other top-level directories are sub-component
+testbeds: each isolates one of gmcount's subsystems in its own standalone
+CMake project so it can be developed/debugged independently before (or while)
+being folded into `gmcount/`. There is no single build for the whole repo —
+each directory builds and flashes separately, and code is copied in rather
+than shared as a library (see "Shared/duplicated files" below).
 
-- `gmcount/` — the primary project: a Geiger-Müller particle counter/data
-  logger for a Pico W. Combines GPIO pulse counting, a DS3231 RTC, SD card
-  logging (FatFs), and WiFi/UDP.
-- `rtc/` — standalone development/test harness for the DS3231 RTC driver.
-- `sdsc/` — standalone SD-card-over-SPI (FatFs) example.
-- `wifi/` — Pico W UDP client/server networking example (port 8080).
-- `wifi2/` — minimal bring-up project for the Pico2 W / RP2350 platform;
-  WiFi code is present but currently commented out.
+- `gmcount/` — the main project (see architecture notes below).
+- `rtc/` — testbed for the DS3231 RTC driver (`api_ds3231.c/h`), which
+  gmcount uses for timestamping.
+- `sdsc/` — testbed for SD-card-over-SPI (FatFs) logging, which gmcount uses
+  for on-device storage.
+- `wifi/` — testbed for Pico W UDP client/server networking (port 8080),
+  which gmcount uses for its command/response interface.
+- `wifi2/` — bring-up testbed for the Pico2 W / RP2350 platform; WiFi code is
+  present but currently commented out. Not yet integrated into gmcount.
+
+Current focus: building out gmcount's real-time data collection path (pulse
+counting → RTC-timestamped records → SD logging), so changes to `rtc/`,
+`sdsc/`, or `wifi/` are generally in service of that, not standalone goals.
 
 See `README.md` for hardware setup (debugprobe, openocd build, minicom,
 sigrok/pulseview) — that's reference material for the physical dev
