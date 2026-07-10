@@ -2,6 +2,21 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Current status
+
+This project gets worked on in short, irregular sessions, so keep this
+section up to date as a "where I left off" note — update it at the end of a
+session rather than trying to reconstruct state from git log next time.
+
+- **Last updated:** 2026-07-10
+- **Doing now:** wiring up gmcount's real-time data collection path (pulse
+  counting → RTC-timestamped records → SD logging).
+- **Known gap:** `gmcount/fatfs.c` (`init_FatFs`) currently just mounts the
+  SD card, appends a fixed `"Hello, world!"` line to `filename.txt`, and
+  unmounts — it does not yet write real per-count records. That's the next
+  piece of the pipeline to build.
+- **Next up:** (nothing queued yet — update this when you pick a next step)
+
 ## Repository overview
 
 `gmcount/` is the main project — a Geiger-Müller particle counter/real-time
