@@ -36,11 +36,15 @@ while (!done && time_us_32() - start < 1000000) {
 
 # Bug history
 
-**DS18B20 conversion wait bug (line 74, 2026-07-16):**
-- Original pico-examples code: `while (ow_read(&ow) == 0);`
-- Problem: Reads full bytes from 1-Wire bus without protocol, interferes with device state/timing
+**pico-examples Issue #422 — Conversion wait bug (2026-07-16):**
+- Original code: `while (ow_read(&ow) == 0);` on line 74
+- Problem: Reads full bytes from 1-Wire without protocol, interferes with device state/timing
 - Symptom: Garbage temperature reads (-0.06°C = 0xFFFF, all devices report same invalid value)
 - Fix: Replace with `sleep_ms(800)` (DS18B20 max conversion: 750ms @ 12-bit resolution)
-- Status: Related to **pico-examples Issue #422** ("1-Wire bad signal after DS18B20_CONVERT_T"). Not explicitly flagged as a bug there, but the timing/signal issues reported align with this problem
-- Note: Also see Issue #569 (missing CRC validation in scratchpad reads)
+- Status: **FIXED**. Related to pico-examples Issue #422 ("1-Wire bad signal after DS18B20_CONVERT_T")
+
+**pico-examples Issue #569 — Missing CRC validation (2026-07-16):**
+- Problem: Scratchpad read doesn't validate 9-byte CRC (byte 8), allowing silent data corruption
+- Fix: Read all 9 bytes, validate CRC-8 (Dallas 1-Wire polynomial 0x8C), reject reads with invalid CRC
+- Status: **FIXED**. All sensor reads now pass CRC validation; no bus errors detected in testing
 
