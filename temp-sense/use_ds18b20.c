@@ -29,6 +29,7 @@
 int example_ds18b20() {
     PIO pio = pio0;
 
+#if 0
     // Create a real-time clock structure and initiate this, used to
     // timestamp each temperature reading.
     struct ds3231_rtc rtc;
@@ -36,6 +37,7 @@ int example_ds18b20() {
                 &rtc);
     ds3231_datetime_t dt;
     uint8_t dt_str[25];
+#endif
 
     // add the onewire program to the PIO shared address space
     if (!pio_can_add_program(pio, &onewire_program)) {
@@ -68,12 +70,14 @@ int example_ds18b20() {
         ow_send(&ow, OW_SKIP_ROM);
         ow_send(&ow, DS18B20_CONVERT_T);
 
-        // wait for the conversions to finish
-        while (ow_read(&ow) == 0);
+        // wait for the conversions to finish (max 750ms for 12-bit resolution)
+        sleep_ms(800);
 
+#if 0
         // timestamp this batch of readings
         ds3231_get_datetime(&dt, &rtc);
         ds3231_ctime(dt_str, sizeof(dt_str), &dt);
+#endif
 
         // read the result from each device
         for (int i = 0; i < num_devs; i += 1) {
@@ -84,7 +88,8 @@ int example_ds18b20() {
             }
             ow_send(&ow, DS18B20_READ_SCRATCHPAD);
             int16_t temp = ow_read(&ow) | (ow_read(&ow) << 8);
-            printf("%s\tdevice %d: %.2f C\n", dt_str, i, temp / 16.0);
+            //printf("%s\tdevice %d: %.2f C\n", dt_str, i, temp / 16.0);
+            printf("device %d: %.2f C\n", i, temp / 16.0);
         }
 
         sleep_ms(5000);
