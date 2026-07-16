@@ -10,18 +10,15 @@ Geiger-Müller pulses.
 
 ## Current status
 
-- **Last updated:** 2026-07-10
-- **Doing now:** initial scaffold is built and compiles clean (`temp-sense.elf`
-  produced via `xbuild.sh`, RP2040/`pico` board, not yet flashed to hardware
-  or physically tested against a real DS18B20).
+- **Last updated:** 2026-07-16
+- **Done:** Hardware verified on real DS18B20 sensors (3 devices detected and working). 
+  Fixed two pico-examples bugs: Issue #422 (conversion wait timing) and Issue #569 (CRC 
+  validation). All sensor reads now pass CRC validation; no bus errors detected.
 - **Known gap:** no SD (FatFs) logging or WiFi/UDP yet — currently just prints
-  timestamped readings over serial. `ONEWIRE_GPIO_PIN` is set to 15 (matching
-  the pico-examples wiring diagram: GPIO 15 → DS18B20 DQ, with an external
-  ~4k pull-up to 3V3 — the internal pull-up is too weak for 1-Wire). Not yet
-  verified against physical hardware.
-- **Next up:** wire up a real DS18B20 and flash/verify on hardware, then add
-  SD logging (reuse `../sdsc/` hw_config.c/fatfs.c pattern) and optionally
-  WiFi/UDP (reuse `../wifi/`), following `../gmcount/`'s pattern.
+  timestamped readings over serial. `ONEWIRE_GPIO_PIN` is set to 15 (GPIO 15 → DS18B20 DQ, 
+  external ~4k pull-up to 3V3).
+- **Next up:** add SD logging (reuse `../sdsc/` hw_config.c/fatfs.c pattern) and 
+  optionally WiFi/UDP (reuse `../wifi/`), following `../gmcount/`'s pattern.
 
 ## Architecture
 
