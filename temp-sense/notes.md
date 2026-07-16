@@ -36,5 +36,11 @@ while (!done && time_us_32() - start < 1000000) {
 
 # Bug history
 
-**Line 74 bug (2026-07-16):** Original pico-examples code used `while (ow_read(&ow) == 0);` to wait for conversion. Problem: reads full bytes from bus without protocol, interferes with device state. Resulted in garbage temps (-0.06°C = 0xFFFF). Fixed by replacing with `sleep_ms(800)`. Bug was in the official Raspberry Pi example, not introduced locally.
+**DS18B20 conversion wait bug (line 74, 2026-07-16):**
+- Original pico-examples code: `while (ow_read(&ow) == 0);`
+- Problem: Reads full bytes from 1-Wire bus without protocol, interferes with device state/timing
+- Symptom: Garbage temperature reads (-0.06°C = 0xFFFF, all devices report same invalid value)
+- Fix: Replace with `sleep_ms(800)` (DS18B20 max conversion: 750ms @ 12-bit resolution)
+- Status: Related to **pico-examples Issue #422** ("1-Wire bad signal after DS18B20_CONVERT_T"). Not explicitly flagged as a bug there, but the timing/signal issues reported align with this problem
+- Note: Also see Issue #569 (missing CRC validation in scratchpad reads)
 
