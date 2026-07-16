@@ -22,6 +22,21 @@
 // Modify these definitions as required, to match connections.
 #define ONEWIRE_GPIO_PIN 15
 
+// Dallas 1-Wire CRC-8 validation
+static uint8_t ow_crc8(uint8_t *data, int len) {
+    uint8_t crc = 0;
+    for (int i = 0; i < len; i++) {
+        uint8_t byte = data[i];
+        for (int j = 0; j < 8; j++) {
+            uint8_t bit = (byte ^ crc) & 1;
+            crc >>= 1;
+            if (bit) crc ^= 0x8C;
+            byte >>= 1;
+        }
+    }
+    return crc;
+}
+
 #define DS3231_I2C_PORT i2c1
 #define DS3231_I2C_SDA_PIN 26
 #define DS3231_I2C_SCL_PIN 27
@@ -87,9 +102,21 @@ int example_ds18b20() {
                 ow_send(&ow, romcode[i] >> b);
             }
             ow_send(&ow, DS18B20_READ_SCRATCHPAD);
-            int16_t temp = ow_read(&ow) | (ow_read(&ow) << 8);
-            //printf("%s\tdevice %d: %.2f C\n", dt_str, i, temp / 16.0);
-            printf("device %d: %.2f C\n", i, temp / 16.0);
+
+            // read all 9 scratchpad bytes (temp LSB, temp MSB, TH, TL, config, res, res, res, CRC)
+            uint8_t scratchpad[9];
+            for (int b = 0; b < 9; b++) {
+                scratchpad[b] = ow_read(&ow);
+            }
+
+            // validate CRC (should be 0 if calculation is correct)
+            if (ow_crc8(scratchpad, 9) == 0) {
+                int16_t temp = scratchpad[0] | (scratchpad[1] << 8);
+                //printf("%s\tdevice %d: %.2f C\n", dt_str, i, temp / 16.0);
+                printf("device %d: %.2f C\n", i, temp / 16.0);
+            } else {
+                printf("device %d: CRC error\n", i);
+            }
         }
 
         sleep_ms(5000);
