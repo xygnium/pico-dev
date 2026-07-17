@@ -112,8 +112,10 @@ int example_ds18b20() {
             // validate CRC (should be 0 if calculation is correct)
             if (ow_crc8(scratchpad, 9) == 0) {
                 int16_t temp = scratchpad[0] | (scratchpad[1] << 8);
-                //printf("%s\tdevice %d: %.2f C\n", dt_str, i, temp / 16.0);
-                printf("device %d: %.2f C\n", i, temp / 16.0);
+                double celsius = temp / 16.0;
+                double fahrenheit = (celsius * 9.0 / 5.0) + 32.0;
+                //printf("%s\tdevice %d: %.2f C (%.2f F)\n", dt_str, i, celsius, fahrenheit);
+                printf("device %d: %.2f C (%.2f F)\n", i, celsius, fahrenheit);
             } else {
                 printf("device %d: CRC error\n", i);
             }
