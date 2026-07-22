@@ -25,6 +25,9 @@ automatically alongside this one when you're working in that directory.
   gmcount (sensor → RTC-timestamped record → SD/WiFi). Scaffolded and builds;
   not yet flashed/verified on real hardware, no SD/WiFi logging yet. See
   `temp-sense/CLAUDE.md`.
+- `vbox-usb-attach/` — not a Pico project: an archived standalone Python CLI
+  (`vbox-usb-attach.py`) for attaching/detaching a USB device to/from a
+  VirtualBox VM, kept here for reference only.
 
 See `README.md` for hardware setup (debugprobe, openocd build, minicom,
 sigrok/pulseview) — that's reference material for the physical dev
