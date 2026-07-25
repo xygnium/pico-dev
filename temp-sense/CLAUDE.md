@@ -30,10 +30,20 @@ Geiger-Müller pulses.
   failing on the first attempt or two (`wifi_connect()` in `../common/wifi/wifi.c` now
   retries up to 5 times with a 1s delay, logging each failed attempt) — confirmed
   connecting reliably across repeated power-cycles.
+  The DS3231's clock is now settable over the same UDP channel: `settime YYYY-MM-DD
+  HH:MM:SS D` (D = day-of-week 1..7, 1=Monday, per `api_ds3231.h`). Verified on
+  hardware. `udp_client.py settime` with no further arguments fills in the host's
+  current local time, so the Pico does no timezone handling — it stores whatever
+  digits it is sent, and the host owns the timezone decision. Deliberately a manual
+  command rather than a hardcoded `ds3231_set_datetime()` call, which would re-run
+  on every boot and reset the clock to build time. The battery-backed RTC keeps
+  time across power cycles, so this is normally a one-time step.
 - **Known gap:** no SD (FatFs) logging yet — WiFi is query-on-demand only, nothing is
   persisted to storage. `ONEWIRE_GPIO_PIN` is set to 15 (GPIO 15 → DS18B20 DQ, external
-  ~4k pull-up to 3V3). DS3231's clock has never been set (reads back `Jan 01 2000`) —
-  needs a one-off `ds3231_set_datetime()` call.
+  ~4k pull-up to 3V3). Note the RTC holds **local** time, while the phase-3 design
+  below calls for storing UTC epochs — reconcile these when that work starts
+  (either set the RTC to UTC and format to local at display time, or keep local and
+  record the offset).
 - **Next up:** planned 3-phase WiFi path — (1) hello-world UDP echo [done], (2) useful
   on-demand query capability [done, `read` command], (3) migrate to MQTT (lwIP already
   vendors an MQTT client at `pico-sdk/lib/lwip/src/apps/mqtt`, so no new dependency

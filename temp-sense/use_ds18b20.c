@@ -31,6 +31,9 @@ double g_temp_celsius[TEMP_STORE_MAX_DEVICES];
 bool g_temp_valid[TEMP_STORE_MAX_DEVICES];
 char g_temp_timestamp[25];
 
+ds3231_rtc_t g_rtc;
+bool g_rtc_ready = false;
+
 // Dallas 1-Wire CRC-8 validation
 static uint8_t ow_crc8(uint8_t *data, int len) {
     uint8_t crc = 0;
@@ -53,11 +56,12 @@ static uint8_t ow_crc8(uint8_t *data, int len) {
 int example_ds18b20() {
     PIO pio = pio0;
 
-    // Create a real-time clock structure and initiate this, used to
-    // timestamp each temperature reading.
-    struct ds3231_rtc rtc;
+    // Initialise the real-time clock used to timestamp each temperature
+    // reading. g_rtc is a global (see temp_store.h) so the `settime` WiFi
+    // command in temp-sense.c can reach it too.
     ds3231_init(DS3231_I2C_PORT, DS3231_I2C_SDA_PIN, DS3231_I2C_SCL_PIN,
-                &rtc);
+                &g_rtc);
+    g_rtc_ready = true;
     ds3231_datetime_t dt;
     uint8_t dt_str[25];
 
@@ -101,7 +105,7 @@ int example_ds18b20() {
         sleep_ms(800);
 
         // timestamp this batch of readings
-        ds3231_get_datetime(&dt, &rtc);
+        ds3231_get_datetime(&dt, &g_rtc);
         ds3231_ctime(dt_str, sizeof(dt_str), &dt);
         memcpy(g_temp_timestamp, dt_str, sizeof(g_temp_timestamp));
 
