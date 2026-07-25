@@ -7,6 +7,7 @@ project(temp_sense_project C CXX ASM)
 pico_sdk_init()
 
 add_subdirectory(onewire_library)
+add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../common/wifi common_wifi)
 
 add_executable(temp-sense
     temp-sense.c
@@ -21,6 +22,7 @@ target_link_libraries(temp-sense
     hardware_i2c
     hardware_pio
     onewire_library
+    picowifi
 )
 
 pico_set_program_name(temp-sense "temp-sense")

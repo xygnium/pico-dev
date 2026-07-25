@@ -9,6 +9,7 @@
  */
 
 #include <stdio.h>
+#include <string.h>
 #include "pico/stdlib.h"
 #include "hardware/pio.h"
 #include "hardware/i2c.h"
@@ -18,9 +19,17 @@
 #include "ds18b20.h"            // ds18b20 function codes
 
 #include "api_ds3231.h"
+#include "wifi.h"
+#include "temp_store.h"
 
 // Modify these definitions as required, to match connections.
 #define ONEWIRE_GPIO_PIN 15
+
+int g_temp_num_devs = 0;
+uint64_t g_temp_romcode[TEMP_STORE_MAX_DEVICES];
+double g_temp_celsius[TEMP_STORE_MAX_DEVICES];
+bool g_temp_valid[TEMP_STORE_MAX_DEVICES];
+char g_temp_timestamp[25];
 
 // Dallas 1-Wire CRC-8 validation
 static uint8_t ow_crc8(uint8_t *data, int len) {
@@ -37,14 +46,13 @@ static uint8_t ow_crc8(uint8_t *data, int len) {
     return crc;
 }
 
-#define DS3231_I2C_PORT i2c1
-#define DS3231_I2C_SDA_PIN 26
-#define DS3231_I2C_SCL_PIN 27
+#define DS3231_I2C_PORT i2c0
+#define DS3231_I2C_SDA_PIN 8
+#define DS3231_I2C_SCL_PIN 9
 
 int example_ds18b20() {
     PIO pio = pio0;
 
-#if 0
     // Create a real-time clock structure and initiate this, used to
     // timestamp each temperature reading.
     struct ds3231_rtc rtc;
@@ -52,7 +60,6 @@ int example_ds18b20() {
                 &rtc);
     ds3231_datetime_t dt;
     uint8_t dt_str[25];
-#endif
 
     // add the onewire program to the PIO shared address space
     if (!pio_can_add_program(pio, &onewire_program)) {
@@ -78,6 +85,11 @@ int example_ds18b20() {
         printf("\t%d: 0x%llx\n", i, romcode[i]);
     }
 
+    g_temp_num_devs = num_devs;
+    for (int i = 0; i < num_devs; i += 1) {
+        g_temp_romcode[i] = romcode[i];
+    }
+
     while (num_devs > 0) {
         // start temperature conversion in parallel on all devices
         // (see ds18b20 datasheet)
@@ -88,11 +100,10 @@ int example_ds18b20() {
         // wait for the conversions to finish (max 750ms for 12-bit resolution)
         sleep_ms(800);
 
-#if 0
         // timestamp this batch of readings
         ds3231_get_datetime(&dt, &rtc);
         ds3231_ctime(dt_str, sizeof(dt_str), &dt);
-#endif
+        memcpy(g_temp_timestamp, dt_str, sizeof(g_temp_timestamp));
 
         // read the result from each device
         for (int i = 0; i < num_devs; i += 1) {
@@ -114,13 +125,16 @@ int example_ds18b20() {
                 int16_t temp = scratchpad[0] | (scratchpad[1] << 8);
                 double celsius = temp / 16.0;
                 double fahrenheit = (celsius * 9.0 / 5.0) + 32.0;
-                //printf("%s\tdevice %d: %.2f C (%.2f F)\n", dt_str, i, celsius, fahrenheit);
-                printf("device %d: %.2f C (%.2f F)\n", i, celsius, fahrenheit);
+                printf("%s\tdevice %d: %.2f C (%.2f F)\n", dt_str, i, celsius, fahrenheit);
+                g_temp_celsius[i] = celsius;
+                g_temp_valid[i] = true;
             } else {
                 printf("device %d: CRC error\n", i);
+                g_temp_valid[i] = false;
             }
         }
 
+        wifi_udp_poll();
         sleep_ms(5000);
     }
 
