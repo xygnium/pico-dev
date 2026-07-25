@@ -37,7 +37,8 @@ Geiger-Müller pulses.
 - **Next up:** planned 3-phase WiFi path — (1) hello-world UDP echo [done], (2) useful
   on-demand query capability [done, `read` command], (3) migrate to MQTT (lwIP already
   vendors an MQTT client at `pico-sdk/lib/lwip/src/apps/mqtt`, so no new dependency
-  needed). Priority is to iterate on WiFi here in temp-sense first, then backport the
+  needed) — see "Planned: storage & MQTT reporting" below for the agreed design.
+  Priority is to iterate on WiFi here in temp-sense first, then backport the
   shared `common/wifi` usage to gmcount once this is working. SD logging (reuse
   `../sdsc/` hw_config.c/fatfs.c pattern) is a separate, still-unstarted piece.
 
@@ -64,3 +65,69 @@ Sensor: **DS18B20** (digital, 1-Wire), not the DS3231's on-die
 
 See `../gmcount/CLAUDE.md` for how the SD/WiFi pieces fit together once
 they're added here.
+
+## Planned: storage & MQTT reporting (phase 3)
+
+**None of this is built yet** — it's the agreed design for phase 3, recorded
+here so the shape is settled before code is written. Current reality is still
+the query-on-demand `read` command over UDP described above.
+
+The central change is a **canonical record plus an in-RAM ring buffer**, with
+SD, UDP, and MQTT all becoming serializers over it rather than three separate
+formatting paths (today `use_ds18b20.c` formats for serial while
+`temp-sense.c` re-formats the same data for UDP):
+
+```c
+typedef struct {
+    uint32_t seq;      // monotonic — dedup + gap detection
+    uint32_t epoch;    // unix time, not a ctime string
+    uint64_t romcode;  // sensor identity travels with the reading
+    int16_t  raw;      // DS18B20 native 1/16 degC; celsius = raw / 16.0
+    uint8_t  flags;    // valid / CRC-error
+} temp_record_t;       // 16 bytes
+```
+
+Design decisions behind that, each with a reason worth not re-litigating:
+
+- **Key by `romcode`, not array index.** This is a latent bug in the current
+  code independent of MQTT: `device 0/1/2` comes from bus enumeration order in
+  `ow_romsearch()`. If a sensor drops off the bus or one is added, the indices
+  shift and historical data silently re-maps to different physical sensors.
+  The romcodes already captured in `g_temp_romcode[]` are stable hardware IDs
+  — use those as identity in topics and log lines.
+- **Store epoch, format late.** `g_temp_timestamp[25]` holds a formatted
+  `ds3231_ctime()` string — 25 bytes, lossy, awkward for any consumer to
+  parse. Store a 4-byte epoch; convert to text only at the serial-print
+  boundary.
+- **Fix time via SNTP, not a one-off `ds3231_set_datetime()`.** Resolves the
+  `Jan 01 2000` gap above more durably: WiFi is already up, so sync from SNTP
+  on connect and write the result to the DS3231. The RTC then covers reboots
+  and WiFi outages, and re-syncs whenever the network returns. lwIP vendors an
+  SNTP client at `pico-sdk/lib/lwip/src/apps/sntp` — verified present, no new
+  dependency, same as the MQTT client.
+- **Decouple sample rate from publish rate.** 5s sampling is very fast for
+  temperature; publishing 3 sensors every 5s is ~52k messages/day of
+  mostly-identical values. Keep sampling as-is but publish on *change
+  threshold + heartbeat* — e.g. if delta > 0.25 degC, or 60s since last
+  publish.
+
+MQTT layer specifics:
+
+- One **retained** topic per sensor, `sensors/temp-sense/<romcode>/temperature`,
+  so a new subscriber gets current state immediately instead of waiting for the
+  next sample.
+- **QoS 0** for the periodic stream; **QoS 1** only for records that can't be
+  lost. Note QoS 1 is at-least-once, so consumers dedup on `seq`.
+- Set a **Last Will** (`sensors/temp-sense/status` → `offline`, retained, with
+  `online` published on connect). This lets consumers distinguish "temperature
+  is steady" from "the logger died" — a distinction the current
+  query-on-demand model cannot express at all.
+
+SD (still unstarted, `../sdsc/` pattern) then becomes the durable tier:
+append-only CSV, one line per record including `seq`, rotated daily. Track a
+**published watermark** (last `seq` successfully published) so a WiFi/broker
+outage is replayed from SD on reconnect rather than lost — that watermark is
+what makes SD genuinely additive here rather than redundant with MQTT.
+
+Sizing is a non-issue: 16 bytes x 3 sensors at 5s is ~576 B/min, so an hour of
+RAM backlog is ~34KB against the RP2040's 264KB SRAM.
