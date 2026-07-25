@@ -129,7 +129,10 @@ int example_ds18b20() {
                 int16_t temp = scratchpad[0] | (scratchpad[1] << 8);
                 double celsius = temp / 16.0;
                 double fahrenheit = (celsius * 9.0 / 5.0) + 32.0;
-                printf("%s\tdevice %d: %.2f C (%.2f F)\n", dt_str, i, celsius, fahrenheit);
+                // Timestamp is UTC — the RTC is deliberately set to UTC so it
+                // needs no DST adjustment; label it so serial logs aren't
+                // mistaken for local wall-clock time.
+                printf("%s UTC\tdevice %d: %.2f C (%.2f F)\n", dt_str, i, celsius, fahrenheit);
                 g_temp_celsius[i] = celsius;
                 g_temp_valid[i] = true;
             } else {

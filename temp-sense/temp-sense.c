@@ -9,8 +9,14 @@
 extern int example_ds18b20();
 
 // `settime YYYY-MM-DD HH:MM:SS D` — D is day-of-week 1..7, 1=Monday, as
-// api_ds3231.h defines it. The client sends already-broken-down local time
-// so the Pico needs no timezone handling; see udp_client.py.
+// api_ds3231.h defines it. The client sends already-broken-down time so the
+// Pico needs no timezone handling; see udp_client.py.
+//
+// The clock is kept in **UTC** by convention: the DS3231 has no timezone or
+// DST rules, so a local-time clock would sit an hour wrong after every DST
+// transition until someone re-ran this command. Nothing here enforces the
+// convention — the RTC stores whatever digits it is sent — so every reported
+// timestamp is labelled UTC to keep it visible.
 //
 // Runs in main-loop context (wifi_udp_poll() is called from the sensor
 // loop, not from the lwIP receive callback), so blocking I2C here is safe.
@@ -20,7 +26,8 @@ static void handle_settime(const char *cmd, char *resp, size_t resp_size) {
     if (sscanf(cmd, "settime %d-%d-%d %d:%d:%d %d",
                &year, &month, &day, &hour, &minute, &second, &dotw) != 7) {
         snprintf(resp, resp_size,
-                 "usage: settime YYYY-MM-DD HH:MM:SS D  (D=1..7, 1=Monday)\n");
+                 "usage: settime YYYY-MM-DD HH:MM:SS D  "
+                 "(D=1..7, 1=Monday; send UTC)\n");
         return;
     }
     if (!g_rtc_ready) {
@@ -52,7 +59,7 @@ static void handle_settime(const char *cmd, char *resp, size_t resp_size) {
     char check_str[25];
     ds3231_get_datetime(&check, &g_rtc);
     ds3231_ctime(check_str, sizeof(check_str), &check);
-    snprintf(resp, resp_size, "rtc set: %s\n", check_str);
+    snprintf(resp, resp_size, "rtc set: %s UTC\n", check_str);
 }
 
 static void handle_wifi_cmd(const char *cmd, char *resp, size_t resp_size) {
@@ -63,7 +70,7 @@ static void handle_wifi_cmd(const char *cmd, char *resp, size_t resp_size) {
             snprintf(resp, resp_size, "no readings yet\n");
             return;
         }
-        size_t off = snprintf(resp, resp_size, "%s\n", g_temp_timestamp);
+        size_t off = snprintf(resp, resp_size, "%s UTC\n", g_temp_timestamp);
         for (int i = 0; i < g_temp_num_devs && off < resp_size; i++) {
             if (g_temp_valid[i]) {
                 off += snprintf(resp + off, resp_size - off,

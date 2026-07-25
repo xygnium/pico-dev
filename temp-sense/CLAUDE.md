@@ -32,18 +32,27 @@ Geiger-Müller pulses.
   connecting reliably across repeated power-cycles.
   The DS3231's clock is now settable over the same UDP channel: `settime YYYY-MM-DD
   HH:MM:SS D` (D = day-of-week 1..7, 1=Monday, per `api_ds3231.h`). Verified on
-  hardware. `udp_client.py settime` with no further arguments fills in the host's
-  current local time, so the Pico does no timezone handling — it stores whatever
-  digits it is sent, and the host owns the timezone decision. Deliberately a manual
-  command rather than a hardcoded `ds3231_set_datetime()` call, which would re-run
-  on every boot and reset the clock to build time. The battery-backed RTC keeps
-  time across power cycles, so this is normally a one-time step.
+  hardware. `udp_client.py settime` with no further arguments fills in the current
+  time, so the Pico does no timezone handling — it stores whatever digits it is
+  sent, and the host owns that decision. Deliberately a manual command rather than
+  a hardcoded `ds3231_set_datetime()` call, which would re-run on every boot and
+  reset the clock to build time. The battery-backed RTC keeps time across power
+  cycles, so this is normally a one-time step.
+- **The RTC is kept in UTC, by convention.** Nothing in the firmware enforces it —
+  the DS3231 just stores digits — so every reported timestamp is labelled `UTC`
+  (serial output, the `read` reply, and the `settime` confirmation) to keep the
+  convention visible. The reason is DST: the DS3231 has no timezone rules, so a
+  local-time clock sits an hour wrong after each transition until someone notices
+  and re-runs `settime` — a *silent* wrongness, whereas a UTC serial log is merely
+  an offset you can see. It also keeps the phase-3 stored log monotonic across the
+  autumn fall-back hour (where local time repeats 01:00–02:00), and matches what
+  MQTT consumers like Home Assistant/InfluxDB/Grafana assume on ingest. The cost is
+  that raw serial output reads as UTC; `udp_client.py` prints the local equivalent
+  alongside, and doing the conversion on-device would mean putting DST rules in
+  firmware, which is exactly the complexity being avoided.
 - **Known gap:** no SD (FatFs) logging yet — WiFi is query-on-demand only, nothing is
   persisted to storage. `ONEWIRE_GPIO_PIN` is set to 15 (GPIO 15 → DS18B20 DQ, external
-  ~4k pull-up to 3V3). Note the RTC holds **local** time, while the phase-3 design
-  below calls for storing UTC epochs — reconcile these when that work starts
-  (either set the RTC to UTC and format to local at display time, or keep local and
-  record the offset).
+  ~4k pull-up to 3V3).
 - **Next up:** planned 3-phase WiFi path — (1) hello-world UDP echo [done], (2) useful
   on-demand query capability [done, `read` command], (3) migrate to MQTT (lwIP already
   vendors an MQTT client at `pico-sdk/lib/lwip/src/apps/mqtt`, so no new dependency

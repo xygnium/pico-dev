@@ -4,8 +4,11 @@
 Usage:
     ./udp_client.py                 # prompt for a command (original behaviour)
     ./udp_client.py read            # send a command directly
-    ./udp_client.py settime         # set the RTC from this host's local clock
+    ./udp_client.py settime         # set the RTC from this host's clock, as UTC
     ./udp_client.py --host 1.2.3.4 read
+
+The device keeps its clock in UTC, so timestamps it reports are UTC. This
+script also prints the local equivalent for convenience.
 """
 
 import argparse
@@ -19,13 +22,19 @@ TIMEOUT = 5
 
 
 def build_settime():
-    """Format this host's current local time for the Pico's settime command.
+    """Format the current UTC time for the Pico's settime command.
 
     api_ds3231.h wants day-of-week 1..7 with 1=Monday, which is exactly what
-    Python's isoweekday() returns. Sending already-broken-down local time
-    keeps timezone handling on this side — the Pico just stores the digits.
+    Python's isoweekday() returns. Sending already-broken-down time keeps all
+    timezone handling on this side — the Pico just stores the digits.
+
+    UTC rather than local time so the RTC never needs re-setting at a DST
+    transition (it has no timezone rules and would otherwise sit an hour wrong
+    until noticed), and so a future stored log stays monotonic across the
+    autumn fall-back hour. This host's own timezone setting is irrelevant —
+    the system clock is UTC-based underneath and we just ask for that view.
     """
-    now = datetime.datetime.now()
+    now = datetime.datetime.now(datetime.timezone.utc)
     return "settime {:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d} {:d}".format(
         now.year, now.month, now.day,
         now.hour, now.minute, now.second, now.isoweekday())
@@ -49,9 +58,13 @@ def main():
         print("Enter command:")
         cmd = input()
 
-    # Bare `settime` means "use this host's clock".
+    # Bare `settime` means "use this host's clock, expressed as UTC".
     if cmd.strip() == "settime":
         cmd = build_settime()
+        now = datetime.datetime.now(datetime.timezone.utc)
+        print("sending UTC {} (local {})".format(
+            now.strftime("%Y-%m-%d %H:%M:%S"),
+            now.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")))
 
     print("cmd=", cmd)
 
@@ -61,6 +74,9 @@ def main():
         sock.sendto(cmd.encode("ascii"), (args.host, args.port))
         payload, _addr = sock.recvfrom(BUFSIZE)
         print(payload.decode())
+        print("(device timestamps above are UTC; local now is {})".format(
+            datetime.datetime.now().astimezone().strftime(
+                "%Y-%m-%d %H:%M:%S %Z")))
     except socket.timeout:
         raise SystemExit("no reply from {}:{} within {}s".format(
             args.host, args.port, TIMEOUT))
