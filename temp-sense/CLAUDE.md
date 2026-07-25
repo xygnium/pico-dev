@@ -103,7 +103,7 @@ typedef struct {
     uint64_t romcode;  // sensor identity travels with the reading
     int16_t  raw;      // DS18B20 native 1/16 degC; celsius = raw / 16.0
     uint8_t  flags;    // valid / CRC-error
-} temp_record_t;       // 16 bytes
+} temp_record_t;       // 24 bytes
 ```
 
 Design decisions behind that, each with a reason worth not re-litigating:
@@ -148,5 +148,11 @@ append-only CSV, one line per record including `seq`, rotated daily. Track a
 outage is replayed from SD on reconnect rather than lost — that watermark is
 what makes SD genuinely additive here rather than redundant with MQTT.
 
-Sizing is a non-issue: 16 bytes x 3 sensors at 5s is ~576 B/min, so an hour of
-RAM backlog is ~34KB against the RP2040's 264KB SRAM.
+The fields sum to 19 bytes, but `uint64_t romcode` forces 8-byte alignment so
+the struct pads to 24 — verified by compiling it for cortex-m0plus. Field
+order does not help (romcode-first is also 24), and 16 was never reachable
+with a full 8-byte ROM code. Worth pinning with a `_Static_assert` when the
+struct is written, since the capacity budget below depends on it.
+
+Sizing is a non-issue: 24 bytes x 3 sensors at 5s is ~864 B/min, so an hour of
+RAM backlog is ~51KB against the RP2040's 264KB SRAM.
