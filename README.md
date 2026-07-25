@@ -86,6 +86,30 @@ modify /home/mike/dev/pico/openocd/tcl/target/rp2040.cfg:
 
 ![alt Virtualbox device capture of Pico Debugprobe](images/pic1.png)
 
+# vbox-usb-attach.py
+CLI alternative to the manual VB Devices->USB menu capture above. Attaches/detaches
+a USB device to/from a running VirtualBox guest via `VBoxManage controlvm`. Archived
+here for reference; not part of any Pico build.
+
+	usage: vbox-usb-attach.py [-h] {dbg,tty,list,help} ...
+
+	  dbg    attach/detach Raspberry Pi Pico Debugprobe
+	  tty    attach/detach USB Serial Adapter
+	  list   list available usb devices on this host
+	  help   show this help message
+
+`dbg` and `tty` both require `--vm <name>` (see `VBoxManage list vms` for valid
+names) and take an optional `--detach` flag (default is attach). `dbg` resolves the
+Debugprobe's UUID by matching its USB `Product` string; `tty` currently falls back
+to a hardcoded UUID (see the `TODO` in the source — it goes stale when VirtualBox
+reassigns the device).
+
+Examples:
+
+	./vbox-usb-attach.py list
+	./vbox-usb-attach.py dbg --vm MyVM
+	./vbox-usb-attach.py dbg --vm MyVM --detach
+
 # Serial Console Interface to pico Device Under Test
 Start minicom before loading program:
 
