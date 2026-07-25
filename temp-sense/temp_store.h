@@ -8,13 +8,12 @@
 
 #define TEMP_STORE_MAX_DEVICES 10
 
-// Latest batch of DS18B20 readings, refreshed once per read cycle in
-// use_ds18b20.c and read by temp-sense.c's WiFi command handler.
+// The sensors found by the 1-Wire bus scan, in enumeration order. This is the
+// *roster* only — readings themselves live in the ring buffer (temp_record.h)
+// and are keyed by ROM code, so a sensor appearing or dropping off shifts
+// these indices without re-mapping any history.
 extern int g_temp_num_devs;
 extern uint64_t g_temp_romcode[TEMP_STORE_MAX_DEVICES];
-extern double g_temp_celsius[TEMP_STORE_MAX_DEVICES];
-extern bool g_temp_valid[TEMP_STORE_MAX_DEVICES];
-extern char g_temp_timestamp[25];
 
 // The DS3231 handle, owned by use_ds18b20.c. Exposed so temp-sense.c's
 // `settime` command can set the clock. g_rtc_ready guards against use

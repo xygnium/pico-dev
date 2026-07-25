@@ -9,7 +9,6 @@
  */
 
 #include <stdio.h>
-#include <string.h>
 #include "pico/stdlib.h"
 #include "hardware/pio.h"
 #include "hardware/i2c.h"
@@ -20,6 +19,7 @@
 
 #include "api_ds3231.h"
 #include "wifi.h"
+#include "temp_record.h"
 #include "temp_store.h"
 
 // Modify these definitions as required, to match connections.
@@ -27,9 +27,6 @@
 
 int g_temp_num_devs = 0;
 uint64_t g_temp_romcode[TEMP_STORE_MAX_DEVICES];
-double g_temp_celsius[TEMP_STORE_MAX_DEVICES];
-bool g_temp_valid[TEMP_STORE_MAX_DEVICES];
-char g_temp_timestamp[25];
 
 ds3231_rtc_t g_rtc;
 bool g_rtc_ready = false;
@@ -63,7 +60,6 @@ int example_ds18b20() {
                 &g_rtc);
     g_rtc_ready = true;
     ds3231_datetime_t dt;
-    uint8_t dt_str[25];
 
     // add the onewire program to the PIO shared address space
     if (!pio_can_add_program(pio, &onewire_program)) {
@@ -104,10 +100,12 @@ int example_ds18b20() {
         // wait for the conversions to finish (max 750ms for 12-bit resolution)
         sleep_ms(800);
 
-        // timestamp this batch of readings
+        // Timestamp this batch of readings. Stored as an epoch in each
+        // record and formatted only here, at the serial-print boundary.
         ds3231_get_datetime(&dt, &g_rtc);
-        ds3231_ctime(dt_str, sizeof(dt_str), &dt);
-        memcpy(g_temp_timestamp, dt_str, sizeof(g_temp_timestamp));
+        uint32_t epoch = temp_epoch_from_datetime(&dt);
+        char ts[20];
+        temp_format_epoch(ts, sizeof(ts), epoch);
 
         // read the result from each device
         for (int i = 0; i < num_devs; i += 1) {
@@ -125,19 +123,26 @@ int example_ds18b20() {
             }
 
             // validate CRC (should be 0 if calculation is correct)
-            if (ow_crc8(scratchpad, 9) == 0) {
-                int16_t temp = scratchpad[0] | (scratchpad[1] << 8);
-                double celsius = temp / 16.0;
+            // A failed read is recorded too, flagged rather than dropped, so
+            // the log shows the gap instead of silently skipping a sample.
+            bool ok = (ow_crc8(scratchpad, 9) == 0);
+            int16_t raw = ok ? (int16_t)(scratchpad[0] | (scratchpad[1] << 8))
+                             : 0;
+            uint32_t seq = temp_ring_push(romcode[i], epoch, raw,
+                                          ok ? TEMP_FLAG_VALID
+                                             : TEMP_FLAG_CRC_ERROR);
+
+            // Timestamp is UTC — the RTC is deliberately set to UTC so it
+            // needs no DST adjustment; label it so serial logs aren't
+            // mistaken for local wall-clock time.
+            if (ok) {
+                double celsius = raw / 16.0;
                 double fahrenheit = (celsius * 9.0 / 5.0) + 32.0;
-                // Timestamp is UTC — the RTC is deliberately set to UTC so it
-                // needs no DST adjustment; label it so serial logs aren't
-                // mistaken for local wall-clock time.
-                printf("%s UTC\tdevice %d: %.2f C (%.2f F)\n", dt_str, i, celsius, fahrenheit);
-                g_temp_celsius[i] = celsius;
-                g_temp_valid[i] = true;
+                printf("%s UTC\tseq %lu\t0x%016llx: %.2f C (%.2f F)\n",
+                       ts, (unsigned long)seq, romcode[i], celsius, fahrenheit);
             } else {
-                printf("device %d: CRC error\n", i);
-                g_temp_valid[i] = false;
+                printf("%s UTC\tseq %lu\t0x%016llx: CRC error\n",
+                       ts, (unsigned long)seq, romcode[i]);
             }
         }
 

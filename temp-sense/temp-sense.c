@@ -4,6 +4,7 @@
 
 #include "wifi.h"
 #include "wifi_secrets.h"
+#include "temp_record.h"
 #include "temp_store.h"
 
 extern int example_ds18b20();
@@ -56,9 +57,10 @@ static void handle_settime(const char *cmd, char *resp, size_t resp_size) {
     // Read back, so the reply reflects what the RTC actually holds rather
     // than what we asked for.
     ds3231_datetime_t check;
-    char check_str[25];
+    char check_str[20];
     ds3231_get_datetime(&check, &g_rtc);
-    ds3231_ctime(check_str, sizeof(check_str), &check);
+    temp_format_epoch(check_str, sizeof(check_str),
+                      temp_epoch_from_datetime(&check));
     snprintf(resp, resp_size, "rtc set: %s UTC\n", check_str);
 }
 
@@ -66,18 +68,30 @@ static void handle_wifi_cmd(const char *cmd, char *resp, size_t resp_size) {
     if (strncmp(cmd, "settime", 7) == 0) {
         handle_settime(cmd, resp, resp_size);
     } else if (strcmp(cmd, "read") == 0) {
-        if (g_temp_num_devs == 0) {
+        if (temp_ring_next_seq() == 0) {
             snprintf(resp, resp_size, "no readings yet\n");
             return;
         }
-        size_t off = snprintf(resp, resp_size, "%s UTC\n", g_temp_timestamp);
+        // One line per sensor, keyed by ROM code and carrying its own
+        // timestamp — so a sensor that has stopped reporting shows as stale
+        // rather than hiding behind a batch header.
+        size_t off = 0;
         for (int i = 0; i < g_temp_num_devs && off < resp_size; i++) {
-            if (g_temp_valid[i]) {
+            temp_record_t rec;
+            if (!temp_ring_latest_for_rom(g_temp_romcode[i], &rec)) {
+                continue;
+            }
+            char ts[20];
+            temp_format_epoch(ts, sizeof(ts), rec.epoch);
+            if (rec.flags & TEMP_FLAG_VALID) {
                 off += snprintf(resp + off, resp_size - off,
-                                 "device %d: %.2f C\n", i, g_temp_celsius[i]);
+                                "0x%016llx  %s UTC  seq %lu  %.2f C\n",
+                                rec.romcode, ts, (unsigned long)rec.seq,
+                                temp_record_celsius(&rec));
             } else {
                 off += snprintf(resp + off, resp_size - off,
-                                 "device %d: CRC error\n", i);
+                                "0x%016llx  %s UTC  seq %lu  CRC error\n",
+                                rec.romcode, ts, (unsigned long)rec.seq);
             }
         }
     } else {

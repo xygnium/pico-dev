@@ -12,6 +12,7 @@ add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../common/wifi common_wifi)
 add_executable(temp-sense
     temp-sense.c
     use_ds18b20.c
+    temp_record.c
     api_ds3231.c
 )
 

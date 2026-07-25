@@ -17,9 +17,8 @@ Geiger-Müller pulses.
   WiFi/UDP is now live: connects via a new shared `../common/wifi/` library (`picowifi`,
   extracted from gmcount's `wifi.c` so it isn't duplicated per-project — see
   `../common/wifi/wifi.h`), listens on UDP port 8080, and answers a `read` command with
-  the latest DS18B20 readings (`device N: XX.XX C`), sourced from shared globals in
-  `temp_store.h` that `use_ds18b20.c` refreshes each cycle. Any other command still gets
-  a generic ack. Verified hardware round-trip with `udp_client.py` (points at
+  the latest DS18B20 readings, one rom-keyed line per sensor. Any other command still
+  gets a generic ack. Verified hardware round-trip with `udp_client.py` (points at
   `192.168.1.120` — update if the Pico W's DHCP lease changes). Credentials live in a
   gitignored `wifi_secrets.h` (currently reusing gmcount's `abzu2` network).
   Fixed a real DS3231 hardware bug found on this board: SDA/SCL were wired to GPIO26/27
@@ -38,6 +37,23 @@ Geiger-Müller pulses.
   a hardcoded `ds3231_set_datetime()` call, which would re-run on every boot and
   reset the clock to build time. The battery-backed RTC keeps time across power
   cycles, so this is normally a one-time step.
+  **Phase 3, part 1 is built:** the canonical `temp_record_t` and its in-RAM ring
+  buffer now exist (`temp_record.h`/`temp_record.c`), and serial, `read` and
+  `settime` are all serializers over them rather than three formatting paths. Each
+  DS18B20 reading is pushed as a record (`seq`, epoch, romcode, raw 1/16 degC,
+  flags); CRC failures are pushed too, flagged rather than dropped, so a bad read
+  shows as a gap instead of vanishing. `read` looks up the newest record per sensor
+  by **romcode** via `temp_ring_latest_for_rom()`, which closes the index-remapping
+  bug described below, and prints each sensor's own timestamp so a sensor that
+  stopped reporting reads as stale rather than hiding behind a batch header.
+  Timestamps are stored as a 4-byte epoch and formatted only at output, by
+  `temp_format_epoch()`; `g_temp_celsius`/`g_temp_valid`/`g_temp_timestamp` are gone
+  and `temp_store.h` is now just the sensor roster plus the RTC handle.
+  The epoch conversions use days-from-civil rather than `mktime()`, which would
+  apply the C library's local timezone to datetimes that are UTC by convention —
+  verified on the host against `timegm()`/`strftime()` across the DS3231's full
+  2000–2099 range. Verified on hardware: contiguous `seq`, correct UTC timestamps,
+  `read` and `settime` both round-tripping.
 - **The RTC is kept in UTC, by convention.** Nothing in the firmware enforces it —
   the DS3231 just stores digits — so every reported timestamp is labelled `UTC`
   (serial output, the `read` reply, and the `settime` confirmation) to keep the
@@ -57,6 +73,10 @@ Geiger-Müller pulses.
   on-demand query capability [done, `read` command], (3) migrate to MQTT (lwIP already
   vendors an MQTT client at `pico-sdk/lib/lwip/src/apps/mqtt`, so no new dependency
   needed) — see "Planned: storage & MQTT reporting" below for the agreed design.
+  Phase 3's record + ring foundation is done (above); remaining, in the order they
+  should be taken: SNTP sync on connect → publish on change-threshold + heartbeat →
+  MQTT (retained per-sensor topics, Last Will) → the SD tier with its published
+  watermark.
   Priority is to iterate on WiFi here in temp-sense first, then backport the
   shared `common/wifi` usage to gmcount once this is working. SD logging (reuse
   `../sdsc/` hw_config.c/fatfs.c pattern) is a separate, still-unstarted piece.
@@ -87,14 +107,15 @@ they're added here.
 
 ## Planned: storage & MQTT reporting (phase 3)
 
-**None of this is built yet** — it's the agreed design for phase 3, recorded
-here so the shape is settled before code is written. Current reality is still
-the query-on-demand `read` command over UDP described above.
+The agreed design for phase 3, recorded here so the shape stays settled. **The
+record and ring buffer are now built** (`temp_record.h`/`temp_record.c` — see
+Current status); SNTP, the publish policy, MQTT and SD are all still unbuilt,
+and the reasoning below is what they should be built to.
 
-The central change is a **canonical record plus an in-RAM ring buffer**, with
-SD, UDP, and MQTT all becoming serializers over it rather than three separate
-formatting paths (today `use_ds18b20.c` formats for serial while
-`temp-sense.c` re-formats the same data for UDP):
+The central change was a **canonical record plus an in-RAM ring buffer**, with
+SD, UDP, and MQTT all becoming serializers over it rather than separate
+formatting paths (`use_ds18b20.c` used to format for serial while
+`temp-sense.c` re-formatted the same data for UDP):
 
 ```c
 typedef struct {
@@ -108,16 +129,16 @@ typedef struct {
 
 Design decisions behind that, each with a reason worth not re-litigating:
 
-- **Key by `romcode`, not array index.** This is a latent bug in the current
-  code independent of MQTT: `device 0/1/2` comes from bus enumeration order in
+- **Key by `romcode`, not array index.** [done] This was a latent bug
+  independent of MQTT: `device 0/1/2` came from bus enumeration order in
   `ow_romsearch()`. If a sensor drops off the bus or one is added, the indices
   shift and historical data silently re-maps to different physical sensors.
-  The romcodes already captured in `g_temp_romcode[]` are stable hardware IDs
-  — use those as identity in topics and log lines.
-- **Store epoch, format late.** `g_temp_timestamp[25]` holds a formatted
-  `ds3231_ctime()` string — 25 bytes, lossy, awkward for any consumer to
-  parse. Store a 4-byte epoch; convert to text only at the serial-print
-  boundary.
+  The romcodes in `g_temp_romcode[]` are stable hardware IDs — keep using
+  those as identity in topics and log lines, as `read` now does.
+- **Store epoch, format late.** [done] `g_temp_timestamp[25]` used to hold a
+  formatted `ds3231_ctime()` string — 25 bytes, lossy, awkward for any
+  consumer to parse. Records now carry a 4-byte epoch and text is produced
+  only at the output boundary, by `temp_format_epoch()`.
 - **Fix time via SNTP, not a one-off `ds3231_set_datetime()`.** Resolves the
   `Jan 01 2000` gap above more durably: WiFi is already up, so sync from SNTP
   on connect and write the result to the DS3231. The RTC then covers reboots
@@ -151,8 +172,13 @@ what makes SD genuinely additive here rather than redundant with MQTT.
 The fields sum to 19 bytes, but `uint64_t romcode` forces 8-byte alignment so
 the struct pads to 24 — verified by compiling it for cortex-m0plus. Field
 order does not help (romcode-first is also 24), and 16 was never reachable
-with a full 8-byte ROM code. Worth pinning with a `_Static_assert` when the
-struct is written, since the capacity budget below depends on it.
+with a full 8-byte ROM code. Pinned with a `_Static_assert` in
+`temp_record.h`, since the capacity budget below depends on it.
 
 Sizing is a non-issue: 24 bytes x 3 sensors at 5s is ~864 B/min, so an hour of
-RAM backlog is ~51KB against the RP2040's 264KB SRAM.
+RAM backlog is ~51KB against the RP2040's 264KB SRAM. `TEMP_RING_CAPACITY` is
+set to 2048 records (49KB) accordingly — roughly that hour. Records occupy a
+fixed slot (`seq % capacity`), so `temp_ring_get(seq)` is a direct index rather
+than a scan, and it distinguishes "not written yet" from "already overwritten"
+by comparison against `temp_ring_next_seq()` — that is the accessor the SD
+replay watermark above needs.
