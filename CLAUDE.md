@@ -5,7 +5,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Repository overview
 
 Each top-level directory is an independent Pico SDK/CMake project — its own
-executable, built and flashed separately. There is no single repo-wide build.
+executable, built and flashed separately (`common/` is the exception: shared
+library code, not a project). There is no single repo-wide build.
 This file covers conventions shared across all projects (external deps,
 build/flash/serial patterns); project-specific architecture and "current
 status" notes live in that project's own `CLAUDE.md`, which Claude Code loads
@@ -22,9 +23,16 @@ automatically alongside this one when you're working in that directory.
 - `wifi2/` — bring-up testbed for the Pico2 W / RP2350 platform; WiFi code is
   present but currently commented out. Not yet integrated into gmcount.
 - `temp-sense/` — a DS18B20 temperature sensor data logger, same shape as
-  gmcount (sensor → RTC-timestamped record → SD/WiFi). Scaffolded and builds;
-  not yet flashed/verified on real hardware, no SD/WiFi logging yet. See
-  `temp-sense/CLAUDE.md`.
+  gmcount (sensor → RTC-timestamped record → SD/WiFi). Verified on real
+  hardware (3 sensors, RTC-timestamped, WiFi/UDP query working); no SD
+  logging yet. Currently the most active project — shared code is developed
+  here first, then backported to gmcount. See `temp-sense/CLAUDE.md`.
+- `common/` — not a project: shared libraries linked into the projects above
+  by relative-path `add_subdirectory`. Currently just `common/wifi/`
+  (`picowifi` — connect + UDP command/response, extracted from gmcount's
+  `wifi.c` so it isn't duplicated per-project). Unlike the per-project
+  duplication pattern used for `api_ds3231.c/h` and FatFs config, code here
+  is meant to have exactly one copy.
 - `vbox-usb-attach/` — not a Pico project: an archived standalone Python CLI
   (`vbox-usb-attach.py`) for attaching/detaching a USB device to/from a
   VirtualBox VM, kept here for reference only.
