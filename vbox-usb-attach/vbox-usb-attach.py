@@ -58,7 +58,11 @@ def usb_action(node, uuid, action):
 
 
 def add_device_args(subparser):
-    subparser.add_argument("--vm", required=True, help="name of the VirtualBox VM")
+    subparser.add_argument(
+        "--vm",
+        required=True,
+        help="name of the VirtualBox VM (see `VBoxManage list vms` for valid names)",
+    )
     subparser.add_argument("--detach", action="store_true", help="detach instead of attach")
 
 
