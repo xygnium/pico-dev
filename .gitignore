@@ -65,3 +65,7 @@ build
 
 # per-project WiFi credentials (real network config, not committed)
 wifi_secrets.h
+
+# personal Claude Code session config (e.g. bg-isolation toggle), not a
+# project-wide policy worth sharing via commit
+.claude/settings.json
