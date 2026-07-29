@@ -21,4 +21,12 @@ extern uint64_t g_temp_romcode[TEMP_STORE_MAX_DEVICES];
 extern ds3231_rtc_t g_rtc;
 extern bool g_rtc_ready;
 
+// False when the RTC is reporting an implausible time (see
+// temp_time_is_plausible()) — i.e. the clock was never set or lost its backup
+// battery, so every timestamp is wrong. Re-evaluated on each sensor cycle, so
+// it clears itself once `settime` has been run; no need for settime to touch
+// it. Surfaced in the serial log and in the `read` reply, since a headless
+// logger has no other way to report it.
+extern bool g_rtc_time_valid;
+
 #endif

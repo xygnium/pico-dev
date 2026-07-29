@@ -30,6 +30,7 @@ uint64_t g_temp_romcode[TEMP_STORE_MAX_DEVICES];
 
 ds3231_rtc_t g_rtc;
 bool g_rtc_ready = false;
+bool g_rtc_time_valid = false;
 
 // Dallas 1-Wire CRC-8 validation
 static uint8_t ow_crc8(uint8_t *data, int len) {
@@ -60,6 +61,26 @@ int example_ds18b20() {
                 &g_rtc);
     g_rtc_ready = true;
     ds3231_datetime_t dt;
+
+    // Sanity-check the clock once at boot. The DS3231's backup cell normally
+    // carries the time across power cycles for years, but if it dies the chip
+    // comes back at 2000-01-01 and would otherwise log confidently wrong
+    // timestamps forever. Warn loudly rather than failing: the temperature
+    // readings are still useful, and the operator may not be watching.
+    ds3231_get_datetime(&dt, &g_rtc);
+    uint32_t boot_epoch = temp_epoch_from_datetime(&dt);
+    g_rtc_time_valid = temp_time_is_plausible(boot_epoch);
+    {
+        char boot_ts[20];
+        temp_format_epoch(boot_ts, sizeof(boot_ts), boot_epoch);
+        if (g_rtc_time_valid) {
+            printf("rtc: %s UTC\n", boot_ts);
+        } else {
+            printf("\n*** rtc: clock not set (reads %s UTC) ***\n"
+                   "*** timestamps will be wrong until you run: "
+                   "settime YYYY-MM-DD HH:MM:SS D (UTC) ***\n\n", boot_ts);
+        }
+    }
 
     // add the onewire program to the PIO shared address space
     if (!pio_can_add_program(pio, &onewire_program)) {
@@ -106,6 +127,10 @@ int example_ds18b20() {
         uint32_t epoch = temp_epoch_from_datetime(&dt);
         char ts[20];
         temp_format_epoch(ts, sizeof(ts), epoch);
+
+        // Re-checked every cycle rather than only at boot, so that running
+        // `settime` clears the warning on its own.
+        g_rtc_time_valid = temp_time_is_plausible(epoch);
 
         // read the result from each device
         for (int i = 0; i < num_devs; i += 1) {

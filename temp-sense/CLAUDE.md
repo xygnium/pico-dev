@@ -10,7 +10,7 @@ Geiger-Müller pulses.
 
 ## Current status
 
-- **Last updated:** 2026-07-25
+- **Last updated:** 2026-07-28
 - **Done:** Hardware verified on real DS18B20 sensors (3 devices detected and working).
   Fixed two pico-examples bugs: Issue #422 (conversion wait timing) and Issue #569 (CRC
   validation). All sensor reads now pass CRC validation; no bus errors detected.
@@ -54,6 +54,17 @@ Geiger-Müller pulses.
   verified on the host against `timegm()`/`strftime()` across the DS3231's full
   2000–2099 range. Verified on hardware: contiguous `seq`, correct UTC timestamps,
   `read` and `settime` both round-tripping.
+- **Boot-time RTC plausibility check** (`temp_time_is_plausible()`,
+  `g_rtc_time_valid`): if the DS3231's backup cell dies it powers up at 2000-01-01
+  and would timestamp everything confidently wrong, so any epoch before 2020-01-01
+  triggers a loud serial warning at boot and a `warning:` line on the `read` reply.
+  Re-checked each sensor cycle, so `settime` clears it on its own. This is what
+  replaced the dropped SNTP sync — see phase 3 below for that reasoning. Threshold
+  host-verified against `timegm()`; verified on hardware for the good-clock path
+  (boot prints `rtc: <time> UTC`, no warning on `read`). The **warning path has
+  not been exercised on hardware** — that needs a boot with the RTC actually
+  unset (pull the CR2032 while unpowered, or temporarily raise
+  `TEMP_TIME_PLAUSIBLE_EPOCH` past the current time to force one trip).
 - **The RTC is kept in UTC, by convention.** Nothing in the firmware enforces it —
   the DS3231 just stores digits — so every reported timestamp is labelled `UTC`
   (serial output, the `read` reply, and the `settime` confirmation) to keep the
@@ -74,9 +85,11 @@ Geiger-Müller pulses.
   vendors an MQTT client at `pico-sdk/lib/lwip/src/apps/mqtt`, so no new dependency
   needed) — see "Planned: storage & MQTT reporting" below for the agreed design.
   Phase 3's record + ring foundation is done (above); remaining, in the order they
-  should be taken: SNTP sync on connect → publish on change-threshold + heartbeat →
-  MQTT (retained per-sensor topics, Last Will) → the SD tier with its published
-  watermark.
+  should be taken: publish on change-threshold + heartbeat → MQTT (retained
+  per-sensor topics, Last Will) → the SD tier with its published watermark.
+  The publish policy comes first because MQTT sits on top of it, and it is
+  testable against the existing serial output before any broker is involved.
+  SNTP was previously listed first here and has been dropped — see phase 3 below.
   Priority is to iterate on WiFi here in temp-sense first, then backport the
   shared `common/wifi` usage to gmcount once this is working. SD logging (reuse
   `../sdsc/` hw_config.c/fatfs.c pattern) is a separate, still-unstarted piece.
@@ -109,8 +122,10 @@ they're added here.
 
 The agreed design for phase 3, recorded here so the shape stays settled. **The
 record and ring buffer are now built** (`temp_record.h`/`temp_record.c` — see
-Current status); SNTP, the publish policy, MQTT and SD are all still unbuilt,
-and the reasoning below is what they should be built to.
+Current status), as is the boot-time RTC plausibility check; the publish
+policy, MQTT and SD are all still unbuilt, and the reasoning below is what they
+should be built to. SNTP was in this plan and has since been **dropped** — see
+the entry below for why, so it doesn't get re-proposed.
 
 The central change was a **canonical record plus an in-RAM ring buffer**, with
 SD, UDP, and MQTT all becoming serializers over it rather than separate
@@ -139,12 +154,31 @@ Design decisions behind that, each with a reason worth not re-litigating:
   formatted `ds3231_ctime()` string — 25 bytes, lossy, awkward for any
   consumer to parse. Records now carry a 4-byte epoch and text is produced
   only at the output boundary, by `temp_format_epoch()`.
-- **Fix time via SNTP, not a one-off `ds3231_set_datetime()`.** Resolves the
-  `Jan 01 2000` gap above more durably: WiFi is already up, so sync from SNTP
-  on connect and write the result to the DS3231. The RTC then covers reboots
-  and WiFi outages, and re-syncs whenever the network returns. lwIP vendors an
-  SNTP client at `pico-sdk/lib/lwip/src/apps/sntp` — verified present, no new
-  dependency, same as the MQTT client.
+- **SNTP: dropped, deliberately.** [decided 2026-07-28] An earlier version of
+  this design called for syncing time from SNTP on connect and writing the
+  result to the DS3231. That is *not* being built, and the reasoning is worth
+  keeping so it doesn't get proposed again. Its stated justification here was
+  resolving the `Jan 01 2000` gap "more durably" — but that gap was simply the
+  clock never having been set, and the `settime` command (commit `1237023`)
+  already closed it. Drift doesn't justify it either: the DS3231 is +/-2ppm
+  over 0–40°C, about **±63 seconds per year**, against a project requirement
+  that time be good to roughly a minute. The battery-backed RTC therefore holds
+  for about a year unattended, and syncing it from the network solves a problem
+  this project does not have. lwIP does vendor an SNTP client at
+  `pico-sdk/lib/lwip/src/apps/sntp` if a future requirement ever needs
+  sub-second accuracy — the objection is to the need, not the availability.
+- **The one real risk SNTP would have covered is a dead backup cell** — the
+  DS3231 then powers up at 2000-01-01 and timestamps everything confidently
+  wrong. That is handled far more cheaply by a **boot-time plausibility check**
+  [done]: `temp_time_is_plausible()` rejects any epoch before 2020-01-01
+  (`TEMP_TIME_PLAUSIBLE_EPOCH`), and `g_rtc_time_valid` drives a loud serial
+  warning at boot plus a `warning:` line on the `read` reply — the latter
+  because a headless logger has no other way to tell whoever is querying it.
+  The check is re-evaluated each sensor cycle, so running `settime` clears it
+  without `settime` needing to know about it. Deliberately a floor test rather
+  than a drift test, for the ±2ppm reason above. This follows the same
+  principle as keeping the RTC in UTC: convert a *silent* wrongness into a
+  visible one.
 - **Decouple sample rate from publish rate.** 5s sampling is very fast for
   temperature; publishing 3 sensors every 5s is ~52k messages/day of
   mostly-identical values. Keep sampling as-is but publish on *change

@@ -70,6 +70,21 @@ bool temp_ring_latest_for_rom(uint64_t romcode, temp_record_t *out);
 /*! \brief Convert a DS3231 datetime to a unix epoch, treating it as UTC. */
 uint32_t temp_epoch_from_datetime(const ds3231_datetime_t *dt);
 
+// 2020-01-01T00:00:00Z. Any RTC reading older than this is taken as "the clock
+// was never set, or lost its backup battery" rather than a real timestamp —
+// the DS3231 powers up at 2000-01-01, and this firmware did not exist in 2019.
+#define TEMP_TIME_PLAUSIBLE_EPOCH 1577836800u
+
+/*! \brief Whether an epoch looks like a real time rather than an unset clock.
+ *
+ * Guards against the one failure mode the battery-backed RTC still has: if the
+ * cell dies, the DS3231 comes back at 2000-01-01 and every record would carry
+ * a confidently wrong timestamp. This turns that into a visible error. It is
+ * deliberately a floor test, not a drift test — the DS3231 is +/-2ppm (~63
+ * s/year), so drift is not a concern at this project's accuracy needs.
+ */
+bool temp_time_is_plausible(uint32_t epoch);
+
 /*! \brief Format a unix epoch as "YYYY-MM-DD HH:MM:SS" UTC.
  *
  * \param buf_size must be at least 20

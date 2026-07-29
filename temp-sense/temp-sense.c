@@ -76,6 +76,14 @@ static void handle_wifi_cmd(const char *cmd, char *resp, size_t resp_size) {
         // timestamp — so a sensor that has stopped reporting shows as stale
         // rather than hiding behind a batch header.
         size_t off = 0;
+        // Lead with the clock warning if it applies: the timestamps below are
+        // meaningless without it, and serial output alone would not reach
+        // whoever is querying over the network.
+        if (!g_rtc_time_valid) {
+            off += snprintf(resp + off, resp_size - off,
+                            "warning: rtc not set — timestamps are wrong "
+                            "(run settime)\n");
+        }
         for (int i = 0; i < g_temp_num_devs && off < resp_size; i++) {
             temp_record_t rec;
             if (!temp_ring_latest_for_rom(g_temp_romcode[i], &rec)) {

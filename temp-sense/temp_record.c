@@ -101,6 +101,10 @@ uint32_t temp_epoch_from_datetime(const ds3231_datetime_t *dt) {
            dt->hour * 3600u + dt->minutes * 60u + dt->seconds;
 }
 
+bool temp_time_is_plausible(uint32_t epoch) {
+    return epoch >= TEMP_TIME_PLAUSIBLE_EPOCH;
+}
+
 void temp_format_epoch(char *buf, size_t buf_size, uint32_t epoch) {
     int32_t days = (int32_t)(epoch / 86400u);
     uint32_t secs = epoch % 86400u;
