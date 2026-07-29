@@ -84,12 +84,13 @@ Geiger-Müller pulses.
   on-demand query capability [done, `read` command], (3) migrate to MQTT (lwIP already
   vendors an MQTT client at `pico-sdk/lib/lwip/src/apps/mqtt`, so no new dependency
   needed) — see "Planned: storage & MQTT reporting" below for the agreed design.
-  Phase 3's record + ring foundation is done (above); remaining, in the order they
-  should be taken: publish on change-threshold + heartbeat → MQTT (retained
-  per-sensor topics, Last Will) → the SD tier with its published watermark.
-  The publish policy comes first because MQTT sits on top of it, and it is
-  testable against the existing serial output before any broker is involved.
-  SNTP was previously listed first here and has been dropped — see phase 3 below.
+  Phase 3's record + RAM ring foundation is done (above); remaining, in the order
+  they should be taken: **SD ring → MQTT (retained per-sensor topics, Last Will,
+  published watermark) → thinning, later**. The pipeline is SD-first — every
+  reading is written to SD and the publisher reads a seq range back off it — so
+  SD comes first because MQTT reads from it. v1 publishes everything, no
+  thinning; see phase 3 below for why that is deliberate. SNTP was previously
+  listed first here and has been dropped — also below.
   Priority is to iterate on WiFi here in temp-sense first, then backport the
   shared `common/wifi` usage to gmcount once this is working. SD logging (reuse
   `../sdsc/` hw_config.c/fatfs.c pattern) is a separate, still-unstarted piece.
@@ -121,11 +122,26 @@ they're added here.
 ## Planned: storage & MQTT reporting (phase 3)
 
 The agreed design for phase 3, recorded here so the shape stays settled. **The
-record and ring buffer are now built** (`temp_record.h`/`temp_record.c` — see
-Current status), as is the boot-time RTC plausibility check; the publish
-policy, MQTT and SD are all still unbuilt, and the reasoning below is what they
-should be built to. SNTP was in this plan and has since been **dropped** — see
-the entry below for why, so it doesn't get re-proposed.
+record and RAM ring buffer are now built** (`temp_record.h`/`temp_record.c` —
+see Current status), as is the boot-time RTC plausibility check; the SD ring,
+MQTT and the publish policy are all still unbuilt, and the reasoning below is
+what they should be built to. SNTP was in this plan and has since been
+**dropped** — see the entry below for why, so it doesn't get re-proposed.
+
+**The pipeline is SD-first:**
+
+```
+sensor -> temp_record_t -> RAM ring (backlog) -> SD ring (durable)
+                                                    |
+                                       publisher reads a seq range -> MQTT
+```
+
+Every reading lands on SD; nothing is filtered on the way in. The publisher
+then reads a **range of seqs** back off SD and sends them as a group, advancing
+a watermark on success. So **build order is SD ring → MQTT → (thinning, later)**
+— the publisher reads from SD, so SD comes first. An earlier version of this
+plan had the publish policy first and SD last, which had the dependency
+backwards.
 
 The central change was a **canonical record plus an in-RAM ring buffer**, with
 SD, UDP, and MQTT all becoming serializers over it rather than separate
@@ -179,11 +195,16 @@ Design decisions behind that, each with a reason worth not re-litigating:
   than a drift test, for the ±2ppm reason above. This follows the same
   principle as keeping the RTC in UTC: convert a *silent* wrongness into a
   visible one.
-- **Decouple sample rate from publish rate.** 5s sampling is very fast for
-  temperature; publishing 3 sensors every 5s is ~52k messages/day of
-  mostly-identical values. Keep sampling as-is but publish on *change
-  threshold + heartbeat* — e.g. if delta > 0.25 degC, or 60s since last
-  publish.
+- **Publish everything, in batches — do not thin, at least at first.**
+  [decided 2026-07-28] The tempting optimisation is to publish only on a change
+  threshold plus a heartbeat (5s sampling of 3 sensors is ~52k messages/day of
+  mostly-identical values). Don't, yet. Thinning suppresses publishes exactly
+  when readings are steady, which is indistinguishable from a logger that has
+  died — the optimisation makes a healthy system look broken. v1 publishes
+  every record from the watermark to newest, so publish rate tracks sample rate
+  and silence unambiguously means something is wrong. Thinning becomes safe
+  once the retained topics and Last Will below exist, since those carry
+  liveness independently of the data rate; layer it in then, not before.
 
 MQTT layer specifics:
 
@@ -197,11 +218,68 @@ MQTT layer specifics:
   is steady" from "the logger died" — a distinction the current
   query-on-demand model cannot express at all.
 
-SD (still unstarted, `../sdsc/` pattern) then becomes the durable tier:
-append-only CSV, one line per record including `seq`, rotated daily. Track a
-**published watermark** (last `seq` successfully published) so a WiFi/broker
-outage is replayed from SD on reconnect rather than lost — that watermark is
-what makes SD genuinely additive here rather than redundant with MQTT.
+SD (still unstarted, `../sdsc/` pattern) is the durable tier, and is **a ring**
+— the same scheme as the RAM ring, just far larger: a fixed-size region with
+records at `seq % sd_capacity`, overwriting oldest. That keeps lookup by `seq`
+a direct index rather than a scan, and bounds space with no rotation or
+compaction logic. (An earlier draft here said append-only CSV rotated daily;
+a ring supersedes that.)
+
+A **published watermark** — the last `seq` handed to the broker successfully —
+is what makes SD additive rather than redundant with MQTT: a WiFi or broker
+outage is replayed from SD on reconnect instead of lost. Two consequences:
+
+- **The SD ring's capacity sets the maximum survivable outage.** Once
+  unpublished records are overwritten they are gone, so capacity should be
+  chosen against how long a broker outage this should tolerate.
+- **The watermark means "last `seq` considered", not "last published".** Those
+  are identical while v1 publishes everything, but they diverge the moment
+  thinning is added — and reading it as "last published" would make every
+  deliberately-skipped record look like a gap and get re-sent on reconnect,
+  defeating the thinning entirely. Define it the safe way now.
+
+### SD sizing and card layout
+
+Sized against the **128MB card currently on hand** (larger is available later;
+the ring size is one constant).
+
+- **On-SD record: pad `temp_record_t`'s 24 bytes to 32.** SD/FatFs sectors are
+  512 bytes, which 24 does not divide — records would straddle sector
+  boundaries and every update would become a read-modify-write of two sectors.
+  32 gives exactly 16 records/sector. The 8 spare bytes are not waste: they
+  hold a per-record CRC (so a corrupt sector is detectable) and a format
+  version byte. Note this is the *on-SD* layout; the in-RAM struct stays 24.
+- **Ring: 64MB = 2^21 records ≈ 40 days.** At 3 sensors / 5s that is ~51,840
+  records/day ≈ 1.66 MB/day, so 64MB holds ~40 days and the full 128MB would
+  hold ~81. 40 days is already far past any realistic broker outage, and
+  stopping at half the card leaves room for the config file below.
+- **Keep the record count a power of two.** cortex-m0plus has no hardware
+  divide, so `seq % capacity` compiles to a mask rather than a division call —
+  the RAM ring's `TEMP_RING_CAPACITY` 2048 already works this way.
+- **A bigger ring wears the card *less*.** A ring rewrites its own region
+  forever, so at 1.66 MB/day a 64MB ring recycles every ~38 days where a 2MB
+  one would recycle every ~1.2 days. Oversizing is nearly free and buys card
+  life — which is the other reason not to size the ring down to just the
+  retention actually needed.
+
+Card layout (FatFs, `../sdsc/` pattern — so "reserving" space is simply not
+filling the card):
+
+| File | Size | Note |
+|---|---|---|
+| `ring.dat` | 64MB | preallocated at first boot, never grows |
+| `watermark.dat` | ~1 sector | must survive reboot |
+| `config.txt` | future, a few KB | space deliberately reserved for it |
+| free | ~60MB | headroom |
+
+- **Preallocate `ring.dat` to full size once, at first boot.** That is what
+  makes the reservation real: the ring's footprint becomes fixed and known, so
+  a config file added later cannot be squeezed out, and the ring can never fail
+  a write by trying to extend onto a full card.
+- **Don't let `watermark.dat` be one fixed sector rewritten forever.** It is
+  updated after every publish batch, which makes it a far worse wear hotspot
+  than the ring itself. Give it a small ring of its own, or write it less
+  often — decide when it's built.
 
 The fields sum to 19 bytes, but `uint64_t romcode` forces 8-byte alignment so
 the struct pads to 24 — verified by compiling it for cortex-m0plus. Field
