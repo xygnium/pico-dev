@@ -10,7 +10,7 @@ Geiger-Müller pulses.
 
 ## Current status
 
-- **Last updated:** 2026-07-28
+- **Last updated:** 2026-07-30
 - **Done:** Hardware verified on real DS18B20 sensors (3 devices detected and working).
   Fixed two pico-examples bugs: Issue #422 (conversion wait timing) and Issue #569 (CRC
   validation). All sensor reads now pass CRC validation; no bus errors detected.
@@ -77,23 +77,46 @@ Geiger-Müller pulses.
   that raw serial output reads as UTC; `udp_client.py` prints the local equivalent
   alongside, and doing the conversion on-device would mean putting DST rules in
   firmware, which is exactly the complexity being avoided.
-- **Known gap:** no SD (FatFs) logging yet — WiFi is query-on-demand only, nothing is
-  persisted to storage. `ONEWIRE_GPIO_PIN` is set to 15 (GPIO 15 → DS18B20 DQ, external
-  ~4k pull-up to 3V3).
-- **Next up:** planned 3-phase WiFi path — (1) hello-world UDP echo [done], (2) useful
-  on-demand query capability [done, `read` command], (3) migrate to MQTT (lwIP already
-  vendors an MQTT client at `pico-sdk/lib/lwip/src/apps/mqtt`, so no new dependency
-  needed) — see "Planned: storage & MQTT reporting" below for the agreed design.
-  Phase 3's record + RAM ring foundation is done (above); remaining, in the order
-  they should be taken: **SD ring → MQTT (retained per-sensor topics, Last Will,
-  published watermark) → thinning, later**. The pipeline is SD-first — every
-  reading is written to SD and the publisher reads a seq range back off it — so
-  SD comes first because MQTT reads from it. v1 publishes everything, no
-  thinning; see phase 3 below for why that is deliberate. SNTP was previously
-  listed first here and has been dropped — also below.
+- **SD bring-up, step 1 of 4, is in the build but NOT yet hardware-verified.**
+  `sd_probe.c` mounts the card and prints its size, free space, cluster size and
+  directory listing, then stops — it writes nothing. `hw_config.c` is copied from
+  `../gmcount/` (byte-identical to `../sdsc/`'s): SPI0, SCK=18, MOSI=19, MISO=16,
+  CS=17, clear of the 1-Wire GPIO15, I2C0 GPIO8/9 and the CYW43's 23/24/25/29.
+  **The module is not yet wired** — see the wiring spec in `notes.md`, including
+  the 3V3-vs-5V `VCC` trap that depends on which module type is used. Mount
+  failure reports and returns rather than panicking the way `../gmcount/fatfs.c`
+  does: a headless logger that halts on a bad card also stops answering UDP.
+  Cluster size is printed deliberately — it decides how much slack the 64MB ring
+  costs in step 2, and boot is the cheapest moment to learn it.
+- **The SD work is deliberately staged into four flashable steps**, because the
+  only real test here is flash-and-observe and a large unflashed change mixes
+  unverified hardware assumptions with unverified software ones:
+  1. mount and report [in the build, unverified] — *is it wired right?*
+  2. ring open + preallocate — *does `ring.dat` get created at 64MB, how slow?*
+  3. write path in the sensor loop + `sd` status command — *do records
+     accumulate, does `seq` survive a reboot?*
+  4. `format` command — *does a blank card recover?*
+  Steps 2–4 are already written and host-tested but held **out of the build**
+  (`sd_ring.c`/`sd_ring.h` are on disk, not in `CMakeLists.txt`) until step 1 is
+  confirmed on hardware. See "SD implementation notes" below for what that code
+  already knows.
+- **Known gap:** nothing is persisted to storage yet — WiFi remains
+  query-on-demand only. `ONEWIRE_GPIO_PIN` is set to 15 (GPIO 15 → DS18B20 DQ,
+  external ~4k pull-up to 3V3).
+- **Next up:** wire the module per `notes.md`, flash, confirm step 1, then steps
+  2–4. After that, the 3-phase WiFi path — (1) hello-world UDP echo [done], (2)
+  useful on-demand query capability [done, `read` command], (3) migrate to MQTT
+  (lwIP already vendors an MQTT client at `pico-sdk/lib/lwip/src/apps/mqtt`, so no
+  new dependency needed) — see "Planned: storage & MQTT reporting" below for the
+  agreed design. Phase 3's record + RAM ring foundation is done (above); remaining:
+  **SD ring → MQTT (retained per-sensor topics, Last Will, published watermark) →
+  thinning, later**. The pipeline is SD-first — every reading is written to SD and
+  the publisher reads a seq range back off it — so SD comes first because MQTT
+  reads from it. v1 publishes everything, no thinning; see phase 3 below for why
+  that is deliberate. SNTP was previously listed first here and has been dropped —
+  also below.
   Priority is to iterate on WiFi here in temp-sense first, then backport the
-  shared `common/wifi` usage to gmcount once this is working. SD logging (reuse
-  `../sdsc/` hw_config.c/fatfs.c pattern) is a separate, still-unstarted piece.
+  shared `common/wifi` usage to gmcount once this is working.
 
 ## Architecture
 
@@ -218,7 +241,8 @@ MQTT layer specifics:
   is steady" from "the logger died" — a distinction the current
   query-on-demand model cannot express at all.
 
-SD (still unstarted, `../sdsc/` pattern) is the durable tier, and is **a ring**
+SD (written, staged into the build — see Current status; `../sdsc/` pattern) is
+the durable tier, and is **a ring**
 — the same scheme as the RAM ring, just far larger: a fixed-size region with
 records at `seq % sd_capacity`, overwriting oldest. That keeps lookup by `seq`
 a direct index rather than a scan, and bounds space with no rotation or
@@ -268,7 +292,7 @@ filling the card):
 | File | Size | Note |
 |---|---|---|
 | `ring.dat` | 64MB | preallocated at first boot, never grows |
-| `watermark.dat` | ~1 sector | must survive reboot |
+| `meta.dat` | ~1 sector | seq high-water + publish watermark; must survive reboot |
 | `config.txt` | future, a few KB | space deliberately reserved for it |
 | free | ~60MB | headroom |
 
@@ -276,10 +300,119 @@ filling the card):
   makes the reservation real: the ring's footprint becomes fixed and known, so
   a config file added later cannot be squeezed out, and the ring can never fail
   a write by trying to extend onto a full card.
-- **Don't let `watermark.dat` be one fixed sector rewritten forever.** It is
+- **Don't let the watermark be one fixed sector rewritten forever.** It is
   updated after every publish batch, which makes it a far worse wear hotspot
   than the ring itself. Give it a small ring of its own, or write it less
-  often — decide when it's built.
+  often — decide when it's built. **Resolved: write it less often.** It is
+  `meta.dat`, persisted only every 256 records (`META_PERSIST_INTERVAL`),
+  because two properties already in the design make an exact watermark
+  unnecessary — MQTT consumers dedup on `seq` anyway (QoS 1 is at-least-once),
+  so a stale watermark costs a few duplicate publishes the consumer discards;
+  and the boot-time probe repairs a stale sequence hint by reading forward from
+  it. No second ring needed.
+
+### SD implementation notes
+
+What `sd_ring.c` already accounts for. It is written and host-tested but held
+out of the build until step 1 is confirmed — don't undo these without reading
+the reason.
+
+- **`f_expand()` does not exist in this FatFs build.** `FF_USE_EXPAND` is `0` in
+  `.../FatFs_SPI/ff15/source/ffconf.h` (FatFs R0.15), and it cannot be overridden
+  from here: `ff.c` compiles inside the shared `FatFs_SPI` target, so this
+  project's include path never shadows `ffconf.h`, and editing it would change
+  the library out from under gmcount and sdsc too. **`f_lseek()` past EOF is used
+  instead** — on a write-mode handle it expands the file, allocating clusters
+  without pushing 64MB of zeros through the card.
+- **A preallocated ring is full of stale data, not zeros.** `f_lseek()` expansion
+  does not clear the new clusters, so a fresh `ring.dat` holds whatever the card
+  had before. There is no "written" flag to trust: a slot is valid only if its
+  CRC checks *and* the `seq` it carries belongs in that slot
+  (`seq % capacity == slot`). The record has to prove it belongs.
+- **Sequence numbers must survive reboot — the original design missed this.** The
+  RAM ring counts from 0 every boot while the SD ring persists, so a restart
+  would re-issue seqs already on the card, breaking both dedup and the
+  slot-ownership test above. `sd_ring_init()` recovers the high-water mark and
+  feeds it to `temp_ring_set_next_seq()`; `temp_ring_count()`/`oldest_seq()` also
+  have to learn about a non-zero starting seq or they report RAM records never
+  written this boot. Recovery is the `meta.dat` hint plus a doubling/binary-search
+  probe forward; if `meta.dat` is missing *or its hint is no longer on the card*
+  (a swapped card — trusting it would restart numbering mid-ring), it falls back
+  to a binary search over the ring itself, finding the high-water mark in ~21
+  sector reads rather than scanning two million records. **Host-verified** across
+  empty, partial, exactly-full and multiply-wrapped rings with stale hints — the
+  wrapped cases need ~40 days of data to reach on hardware, so they are not
+  testable there. Record CRC-32 checked against the standard `"123456789"` →
+  `0xCBF43926` vector.
+- **`FF_USE_FASTSEEK` is `1`, so use it.** A cluster link map is built for
+  `ring.dat` at open; without it every seek into a 64MB file walks the FAT chain
+  and the ring stops being O(1) by `seq`. Falls back to ordinary seeking if the
+  file is fragmented enough to overflow the table.
+- **`format` is deliberately awkward to trigger** (step 4). It needs the exact
+  token `format yes-erase-the-card` on the wire, because the UDP port is reachable
+  by anything on the LAN and a stray or mistyped `format` must not wipe the log;
+  `udp_client.py format` prompts as well. Nothing formats automatically — an
+  unmountable card is reported and left alone, since auto-formatting on mount
+  failure destroys recoverable data exactly when the card is flaky. `f_mkfs` is
+  restricted to `FM_FAT|FM_FAT32` (no exFAT), which any host will mount without
+  argument at 128MB. Sequence numbering does **not** restart after a format:
+  consumers have already seen those seqs.
+- Two smaller ones: `FF_MIN_SS == FF_MAX_SS == 512` confirms the premise behind
+  padding the on-SD record to 32 bytes; and `FF_FS_NORTC` is `0`, so FatFs asks
+  the RP2040's *internal* RTC for file timestamps. That clock boots at year 0, so
+  it is seeded from the DS3231 — and must be seeded *after* the library's
+  `time_init()`, which calls `rtc_init()` and would reset an earlier setting.
+
+### Deferred, with reasons — do not re-derive
+
+Raised and deliberately parked while the SD steps land. Each is worth doing;
+none belongs in an unflashed change.
+
+- **Sync on sector completion, not every cycle.** 16 records/sector at 3
+  records/cycle means a sector fills every ~5.3 cycles, so syncing every cycle
+  rewrites the same partial sector ~5 times — roughly 5x write amplification on
+  the data path, plus a directory-entry rewrite each time (`f_sync()` updates
+  mtime, not just data). Syncing when `seq / 16` changes fixes both and is
+  correct regardless of sensor count or sample rate.
+- **A time ceiling on that sync, ~300s.** Only fires when a sector takes longer
+  than that to fill (slow sampling, or a shrunken sensor roster). Keep it a
+  compile-time constant, **not** derived at runtime from sensor count: deriving
+  it would mean a sensor dropping off the bus silently loosens the data-loss
+  guarantee. Set it several times the sector fill time —
+  `(16 / sensor_count) x interval` — or firing mid-sector reintroduces the
+  amplification above. Do log a warning at boot when the configuration is in
+  that zone, since `num_devs` is known then.
+- **Sample rate should not be shaped to the sector geometry.** Tempting, but
+  unreachable: records-per-sector is always a power of two (the record size must
+  divide 512), and a power of two is never divisible by 3 sensors. More
+  importantly the roster is *discovered* by `ow_romsearch()`, so any layout
+  invariant built on a fixed sensor count breaks quietly when one drops off —
+  the same fragility already designed out by keying on `romcode`.
+- **Do not thin the SD write path.** Considered and rejected: SD is the system of
+  record, so a record not written is gone permanently, and the numbers show
+  nothing to gain — 40 days retention against a need for far less, and ~9.5
+  rewrites/year of the ring region is negligible wear. If write frequency is the
+  concern, batch the syncs (reversible) rather than discard data (not). If
+  thinning ever happens it belongs at the *publish* layer, as deadband **plus a
+  forced heartbeat**, and note the DS18B20's 1/16°C quantization makes a naive
+  change-detector dither on exactly the steady readings it meant to suppress.
+- **There is no clean shutdown, so every power-down is the unclean case.** The
+  firmware is a `for(;;)` loop with no stop path. Correctness is fine — per-record
+  CRC, slot ownership and boot recovery all assume torn writes — but the loss
+  window applies to *every* power cycle, not just faults. Proposed definition: a
+  shutdown is clean when all buffered records are on the card, `meta.dat` reflects
+  the true `next_seq` and watermark, and a flag records that this was reached
+  deliberately. Cheap to satisfy with a `sync` UDP command plus a clean-stop flag
+  cleared on first write after boot, which also lets startup report whether the
+  previous run ended cleanly.
+- **Operational logging is missing.** Every carefully-surfaced warning — RTC
+  implausible, SD unavailable, CRC failures, mount errors, which recovery path
+  ran, `format` invoked — goes to `printf` on a UART that nobody is attached to on
+  a headless logger. Suggested shape: a small in-RAM event ring (~48 entries of
+  `{epoch, severity, text}`, ~5KB) queryable as a `log` UDP command — RAM first,
+  because SD faults cannot be logged to SD and a headless box needs them reachable
+  over the network — mirrored to a size-capped `events.log` on SD when the card is
+  up (~60MB headroom in the layout above).
 
 The fields sum to 19 bytes, but `uint64_t romcode` forces 8-byte alignment so
 the struct pads to 24 — verified by compiling it for cortex-m0plus. Field

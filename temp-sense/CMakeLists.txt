@@ -8,11 +8,16 @@ pico_sdk_init()
 
 add_subdirectory(onewire_library)
 add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../common/wifi common_wifi)
+# Absolute path, same as gmcount/sdsc — see the repo root CLAUDE.md. Named
+# binary dir so it does not land in build/build/ the way gmcount's does.
+add_subdirectory(/home/mike/dev/pico/no-OS-FatFS-SD-SPI-RPi-Pico/FatFs_SPI fatfs_spi)
 
 add_executable(temp-sense
     temp-sense.c
     use_ds18b20.c
     temp_record.c
+    sd_probe.c
+    hw_config.c
     api_ds3231.c
 )
 
@@ -24,6 +29,7 @@ target_link_libraries(temp-sense
     hardware_pio
     onewire_library
     picowifi
+    FatFs_SPI
 )
 
 pico_set_program_name(temp-sense "temp-sense")

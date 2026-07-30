@@ -8,6 +8,7 @@
 #include "temp_store.h"
 
 extern int example_ds18b20();
+extern void sd_probe(void);
 
 // `settime YYYY-MM-DD HH:MM:SS D` — D is day-of-week 1..7, 1=Monday, as
 // api_ds3231.h defines it. The client sends already-broken-down time so the
@@ -110,6 +111,10 @@ static void handle_wifi_cmd(const char *cmd, char *resp, size_t resp_size) {
 int main() {
     stdio_init_all();
     printf("Hello, world!\n");
+
+    // Probe the SD card early, before the WiFi connect retries, so its output
+    // is not buried in the boot log.
+    sd_probe();
 
     int wifi_err = wifi_connect(WIFI_COUNTRY, WIFI_SSID, WIFI_PASS, WIFI_AUTH);
     if (wifi_err) {
