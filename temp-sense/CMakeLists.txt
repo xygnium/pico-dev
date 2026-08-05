@@ -16,7 +16,7 @@ add_executable(temp-sense
     temp-sense.c
     use_ds18b20.c
     temp_record.c
-    sd_probe.c
+    sd_ring.c
     hw_config.c
     api_ds3231.c
 )

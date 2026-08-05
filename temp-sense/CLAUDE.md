@@ -10,7 +10,7 @@ Geiger-Müller pulses.
 
 ## Current status
 
-- **Last updated:** 2026-07-30
+- **Last updated:** 2026-08-05
 - **Done:** Hardware verified on real DS18B20 sensors (3 devices detected and working).
   Fixed two pico-examples bugs: Issue #422 (conversion wait timing) and Issue #569 (CRC
   validation). All sensor reads now pass CRC validation; no bus errors detected.
@@ -77,44 +77,86 @@ Geiger-Müller pulses.
   that raw serial output reads as UTC; `udp_client.py` prints the local equivalent
   alongside, and doing the conversion on-device would mean putting DST rules in
   firmware, which is exactly the complexity being avoided.
-- **SD bring-up, step 1 of 4, is in the build but NOT yet hardware-verified.**
-  `sd_probe.c` mounts the card and prints its size, free space, cluster size and
-  directory listing, then stops — it writes nothing. `hw_config.c` is copied from
+- **SD bring-up, step 1 of 4 (mount + report), is hardware-verified (2026-08-05)**
+  — superseded in the build by step 2's `sd_ring.c` below, but `sd_probe.c`
+  stays on disk as a simpler fallback smoke test. It mounts the card and
+  prints its size, free space, cluster size and directory listing, then
+  stops — it writes nothing. `hw_config.c` is copied from
   `../gmcount/` (byte-identical to `../sdsc/`'s): SPI0, SCK=18, MOSI=19, MISO=16,
   CS=17, clear of the 1-Wire GPIO15, I2C0 GPIO8/9 and the CYW43's 23/24/25/29.
-  **The module is not yet wired** — see the wiring spec in `notes.md`, including
-  the 3V3-vs-5V `VCC` trap that depends on which module type is used. Mount
-  failure reports and returns rather than panicking the way `../gmcount/fatfs.c`
-  does: a headless logger that halts on a bad card also stops answering UDP.
-  Cluster size is printed deliberately — it decides how much slack the 64MB ring
-  costs in step 2, and boot is the cheapest moment to learn it.
+  Wiring follows the spec in `notes.md`. On hardware: `245760 sectors (120 MB)`,
+  `119 MB free, cluster size 2048 bytes`, card empty, `sd probe: OK` — the card
+  labelled 128MB reports 120MB formatted, as expected. Mount failure reports and
+  returns rather than panicking the way `../gmcount/fatfs.c` does: a headless
+  logger that halts on a bad card also stops answering UDP. Cluster size is
+  printed deliberately — it decides how much slack the 64MB ring costs in step
+  2, and boot is the cheapest moment to learn it.
 - **The SD work is deliberately staged into four flashable steps**, because the
   only real test here is flash-and-observe and a large unflashed change mixes
   unverified hardware assumptions with unverified software ones:
-  1. mount and report [in the build, unverified] — *is it wired right?*
-  2. ring open + preallocate — *does `ring.dat` get created at 64MB, how slow?*
-  3. write path in the sensor loop + `sd` status command — *do records
-     accumulate, does `seq` survive a reboot?*
-  4. `format` command — *does a blank card recover?*
-  Steps 2–4 are already written and host-tested but held **out of the build**
-  (`sd_ring.c`/`sd_ring.h` are on disk, not in `CMakeLists.txt`) until step 1 is
-  confirmed on hardware. See "SD implementation notes" below for what that code
-  already knows.
-- **Known gap:** nothing is persisted to storage yet — WiFi remains
-  query-on-demand only. `ONEWIRE_GPIO_PIN` is set to 15 (GPIO 15 → DS18B20 DQ,
-  external ~4k pull-up to 3V3).
-- **Next up:** wire the module per `notes.md`, flash, confirm step 1, then steps
-  2–4. After that, the 3-phase WiFi path — (1) hello-world UDP echo [done], (2)
-  useful on-demand query capability [done, `read` command], (3) migrate to MQTT
-  (lwIP already vendors an MQTT client at `pico-sdk/lib/lwip/src/apps/mqtt`, so no
-  new dependency needed) — see "Planned: storage & MQTT reporting" below for the
-  agreed design. Phase 3's record + RAM ring foundation is done (above); remaining:
-  **SD ring → MQTT (retained per-sensor topics, Last Will, published watermark) →
-  thinning, later**. The pipeline is SD-first — every reading is written to SD and
-  the publisher reads a seq range back off it — so SD comes first because MQTT
-  reads from it. v1 publishes everything, no thinning; see phase 3 below for why
-  that is deliberate. SNTP was previously listed first here and has been dropped —
-  also below.
+  1. mount and report [in the build, hardware-verified 2026-08-05] — *is it wired right?*
+  2. ring open + preallocate [in the build, hardware-verified 2026-08-05] —
+     *does `ring.dat` get created at 64MB, how slow?*
+  3. write path in the sensor loop + `sd` status command [in the build,
+     hardware-verified 2026-08-05] — *do records accumulate, does `seq`
+     survive a reboot?*
+  4. `format` command [in the build, hardware-verified 2026-08-05] — *does a
+     blank card recover?*
+  **All four steps are done.** The SD ring is fully built and verified.
+  Step 2 (`sd_ring.c`/`sd_ring.h`, superseding `sd_probe.c`) is in
+  `CMakeLists.txt`; on hardware, first boot preallocated `ring.dat` to 64MB in
+  1621ms, a later boot with `ring.dat` already sized took 127-377ms, found no
+  `meta.dat` (expected — first boot), and the fallback scan correctly
+  recovered an empty ring (`next seq 0`). `sd_ring_init(NULL)` is called from
+  `temp-sense.c` before the DS3231 has been read, so FatFs file timestamps
+  aren't seeded yet — cosmetic only, doesn't touch ring data; worth revisiting
+  when RTC init is reordered ahead of SD. Step 3: `use_ds18b20.c`'s sensor
+  loop now calls `sd_ring_put()` alongside `temp_ring_push()` for every
+  reading, and `sd_ring_sync()` once per cycle; `temp-sense.c` answers a new
+  `sd` UDP command via `sd_ring_status()`. Needed a real fix beyond just
+  wiring calls in: the RAM ring's `next_seq` used to always start at 0, which
+  would have collided with seqs already on the SD card after a reboot, so
+  `temp_ring_set_next_seq()` (`temp_record.c`) now seeds it from
+  `sd_ring_next_seq()` at boot — and `temp_ring_count()`/`oldest_seq()` were
+  fixed to bound RAM presence by that seed too, so they no longer claim slots
+  are populated that were never written this boot. Verified on hardware:
+  `seq` incremented across cycles, survived a reflash (continued at seq 39
+  rather than resetting to 0), and `sd` replied
+  `capacity 2097152 stored 81 seq 0..80 published 0 backlog 81` — consistent
+  with what had actually been written. Step 4: `temp-sense.c` answers a new
+  `format` UDP command, guarded by the exact confirmation token
+  `format yes-erase-the-card` (anything else, including a bare `format`, gets
+  a refusal reply); `udp_client.py` also prompts before sending the real
+  token. Found and fixed a real gap while wiring this in: CLAUDE.md already
+  documented "sequence numbering does not restart after a format" as a
+  decided requirement, but `sd_ring_format()` as originally written just
+  re-ran `sd_ring_init()` after the `f_mkfs`, which would recover `next_seq 0`
+  from the now-empty card — the requirement was decided but never actually
+  implemented. Fixed by capturing `next_seq`/`published_seq` before the wipe
+  and restoring them if the post-format recovery comes back lower. Verified
+  on hardware: a bare `format` was refused/cancelled at the client prompt
+  with no data touched; a confirmed format wiped the card, recreated the
+  ring, and reported `next seq 261` in its own confirmation (continuing from
+  the live counter, not 0); a follow-up `sd` query showed `seq 0..269`,
+  continuing to climb from 261 as expected. See "SD implementation notes"
+  below for what that code already knows.
+- **Next up: MQTT — blocked on a broker, not yet started (as of 2026-08-05).**
+  The SD ring is complete; nothing is published over the network yet — SD is
+  durable storage but `read`/`sd` remain the only query paths. This is the
+  last leg of the 3-phase WiFi path: (1) hello-world UDP echo [done], (2)
+  useful on-demand query capability [done, `read`/`sd`/`settime`/`format`
+  commands], (3) migrate to MQTT (lwIP already vendors an MQTT client at
+  `pico-sdk/lib/lwip/src/apps/mqtt`, so no new dependency needed) — see
+  "Planned: storage & MQTT reporting" below for the agreed design: retained
+  per-sensor topics, Last Will, a published watermark read back from the SD
+  ring, v1 publishes everything with no thinning. **Waiting on the user to
+  bring up a broker** before any of this can be flash-tested — do not start
+  writing the MQTT client until a broker address is provided. **Agreed
+  staging approach once it's ready:** flashable steps mirroring the SD
+  4-step plan above (e.g. (1) connect + Last Will only, (2) publish one
+  retained reading on command, (3) full watermark-driven publish loop),
+  not one large unflashed change — see "small increments" precedent set by
+  the SD work.
   Priority is to iterate on WiFi here in temp-sense first, then backport the
   shared `common/wifi` usage to gmcount once this is working.
 

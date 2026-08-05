@@ -21,6 +21,7 @@
 #include "wifi.h"
 #include "temp_record.h"
 #include "temp_store.h"
+#include "sd_ring.h"
 
 // Modify these definitions as required, to match connections.
 #define ONEWIRE_GPIO_PIN 15
@@ -153,9 +154,17 @@ int example_ds18b20() {
             bool ok = (ow_crc8(scratchpad, 9) == 0);
             int16_t raw = ok ? (int16_t)(scratchpad[0] | (scratchpad[1] << 8))
                              : 0;
-            uint32_t seq = temp_ring_push(romcode[i], epoch, raw,
-                                          ok ? TEMP_FLAG_VALID
-                                             : TEMP_FLAG_CRC_ERROR);
+            uint8_t flags = ok ? TEMP_FLAG_VALID : TEMP_FLAG_CRC_ERROR;
+            uint32_t seq = temp_ring_push(romcode[i], epoch, raw, flags);
+
+            // SD is the durable tier; every reading lands there too, not just
+            // in the RAM backlog. sd_ring_put() is a no-op (returns false) if
+            // the card isn't ready, so this is safe whether or not SD came up.
+            temp_record_t rec = {
+                .seq = seq, .epoch = epoch, .romcode = romcode[i],
+                .raw = raw, .flags = flags,
+            };
+            sd_ring_put(&rec);
 
             // Timestamp is UTC — the RTC is deliberately set to UTC so it
             // needs no DST adjustment; label it so serial logs aren't
@@ -170,6 +179,11 @@ int example_ds18b20() {
                        ts, (unsigned long)seq, romcode[i]);
             }
         }
+
+        // Once per sensor cycle, per sd_ring_sync()'s contract. Syncing more
+        // often than a sector fills is a deliberately deferred optimisation
+        // (see CLAUDE.md); this is the simple, correct baseline for step 3.
+        sd_ring_sync();
 
         wifi_udp_poll();
         sleep_ms(5000);

@@ -44,6 +44,18 @@ static inline double temp_record_celsius(const temp_record_t *rec) {
 uint32_t temp_ring_push(uint64_t romcode, uint32_t epoch, int16_t raw,
                         uint8_t flags);
 
+/*! \brief Seed the next seq to assign, recovered from the SD ring at boot.
+ *
+ * The RAM ring's counter otherwise restarts at 0 every boot while the SD
+ * ring persists, so without this a restart would re-issue seqs already on
+ * the card. Must be called before the first temp_ring_push() of a boot, and
+ * only once. Also marks this seq as the floor below which nothing is in RAM
+ * this boot — see the note on temp_ring_count() — since a jump straight to a
+ * large seq would otherwise make temp_ring_get() report slots as present
+ * that were never actually written this boot.
+ */
+void temp_ring_set_next_seq(uint32_t seq);
+
 /*! \brief Number of records currently buffered (<= TEMP_RING_CAPACITY). */
 size_t temp_ring_count(void);
 

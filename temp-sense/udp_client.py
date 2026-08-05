@@ -66,6 +66,16 @@ def main():
             now.strftime("%Y-%m-%d %H:%M:%S"),
             now.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")))
 
+    # `format` destroys everything on the card. The device itself refuses
+    # anything but the exact confirmation token, but prompt here too so a
+    # bare `format` typed interactively doesn't silently send it.
+    if cmd.strip() == "format":
+        confirm = input(
+            "This destroys all data on the SD card. Type 'yes' to confirm: ")
+        if confirm.strip().lower() != "yes":
+            raise SystemExit("format cancelled")
+        cmd = "format yes-erase-the-card"
+
     print("cmd=", cmd)
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)

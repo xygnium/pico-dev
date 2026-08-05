@@ -8,8 +8,9 @@
 #include "temp_record.h"
 
 /*
- * NOT IN THE BUILD YET — step 2 of the staged SD work; see the note at the top
- * of sd_ring.c and CLAUDE.md, "Current status".
+ * All four staged steps of the SD work are wired into the build and
+ * hardware-verified; see the note at the top of sd_ring.c and CLAUDE.md,
+ * "Current status".
  *
  * The durable tier: the same ring scheme as the in-RAM buffer
  * (temp_record.h), just far larger and on the SD card. A record lives at a

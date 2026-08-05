@@ -1,11 +1,12 @@
 /*
  * SD-backed durable ring for temp_record_t.
  *
- * NOT IN THE BUILD YET. This is step 2 of the staged SD work (see CLAUDE.md,
- * "Current status"); `CMakeLists.txt` currently compiles `sd_probe.c` instead,
- * which only mounts the card and reports it. This file is committed so the
- * design is not lost, but nothing compiles it — so it cannot bit-rot loudly.
- * Re-check it against the headers before adding it back to the build.
+ * All four staged steps (see CLAUDE.md, "Current status") are wired in and
+ * hardware-verified: sd_ring_init() runs from temp-sense.c's main()
+ * (superseding sd_probe.c, which stays on disk out of the build as a simpler
+ * fallback smoke test); sd_ring_put()/sd_ring_sync() run from
+ * use_ds18b20.c's sensor loop; the `sd` and `format` UDP commands in
+ * temp-sense.c answer via sd_ring_status() and sd_ring_format().
  *
  * Layout on the card (FatFs, ../sdsc/ pattern — "reserving" space is simply
  * not filling the card):
@@ -514,6 +515,14 @@ void sd_ring_sync(void) {
 bool sd_ring_format(void) {
     static BYTE work[4096];  // static: too big for the stack
 
+    // Preserve seq continuity across the wipe. f_mkfs destroys ring.dat and
+    // meta.dat both, so sd_ring_init() below recovers 0/0 from the freshly
+    // empty card unless we restore these — and consumers may already have
+    // seen these seqs (CLAUDE.md: "sequence numbering does not restart after
+    // a format").
+    uint32_t pre_next_seq = next_seq;
+    uint32_t pre_published_seq = published_seq;
+
     if (ring_open) {
         f_close(&ring_fil);
         ring_open = false;
@@ -548,7 +557,19 @@ bool sd_ring_format(void) {
     }
     printf("sd: format complete, re-initialising\n");
 
-    return sd_ring_init(boot_dt_valid ? &boot_dt_copy : NULL);
+    if (!sd_ring_init(boot_dt_valid ? &boot_dt_copy : NULL)) {
+        return false;
+    }
+
+    if (pre_next_seq > next_seq) {
+        next_seq = pre_next_seq;
+        published_seq = pre_published_seq;
+        meta_dirty = true;
+        meta_store();
+        printf("sd: seq continuity preserved across format — next seq %lu\n",
+               (unsigned long)next_seq);
+    }
+    return true;
 }
 
 /* ----------------------------------------------------------------- status */

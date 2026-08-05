@@ -6,9 +6,9 @@
 #include "wifi_secrets.h"
 #include "temp_record.h"
 #include "temp_store.h"
+#include "sd_ring.h"
 
 extern int example_ds18b20();
-extern void sd_probe(void);
 
 // `settime YYYY-MM-DD HH:MM:SS D` — D is day-of-week 1..7, 1=Monday, as
 // api_ds3231.h defines it. The client sends already-broken-down time so the
@@ -65,9 +65,34 @@ static void handle_settime(const char *cmd, char *resp, size_t resp_size) {
     snprintf(resp, resp_size, "rtc set: %s UTC\n", check_str);
 }
 
+// `format` destroys everything on the SD card, and the UDP port is reachable
+// by anything on the LAN — so it requires the exact confirmation token
+// rather than the bare word, to keep a stray or mistyped `format` from
+// wiping the log. udp_client.py also prompts before sending the real token.
+#define FORMAT_CONFIRM_CMD "format yes-erase-the-card"
+
+static void handle_format(const char *cmd, char *resp, size_t resp_size) {
+    if (strcmp(cmd, FORMAT_CONFIRM_CMD) != 0) {
+        snprintf(resp, resp_size,
+                 "format: refused — this destroys all data on the SD card. "
+                 "Send exactly \"%s\" to confirm.\n", FORMAT_CONFIRM_CMD);
+        return;
+    }
+    if (sd_ring_format()) {
+        snprintf(resp, resp_size, "sd: format complete, ring ready, next seq %lu\n",
+                 (unsigned long)sd_ring_next_seq());
+    } else {
+        snprintf(resp, resp_size, "sd: format failed — check the serial log\n");
+    }
+}
+
 static void handle_wifi_cmd(const char *cmd, char *resp, size_t resp_size) {
     if (strncmp(cmd, "settime", 7) == 0) {
         handle_settime(cmd, resp, resp_size);
+    } else if (strncmp(cmd, "format", 6) == 0) {
+        handle_format(cmd, resp, resp_size);
+    } else if (strcmp(cmd, "sd") == 0) {
+        sd_ring_status(resp, resp_size);
     } else if (strcmp(cmd, "read") == 0) {
         if (temp_ring_next_seq() == 0) {
             snprintf(resp, resp_size, "no readings yet\n");
@@ -112,9 +137,26 @@ int main() {
     stdio_init_all();
     printf("Hello, world!\n");
 
-    // Probe the SD card early, before the WiFi connect retries, so its output
-    // is not buried in the boot log.
-    sd_probe();
+    // Bring up the SD ring early, before the WiFi connect retries, so its
+    // output is not buried in the boot log. NULL: the DS3231 hasn't been read
+    // yet at this point in boot (that happens in example_ds18b20() below), so
+    // FatFs file timestamps fall back to the RP2040's un-seeded internal
+    // clock for now — cosmetic only, doesn't affect ring data. Timed because
+    // step 2's open question is how slow first-boot preallocation is.
+    uint32_t sd_init_start = to_ms_since_boot(get_absolute_time());
+    bool sd_ok = sd_ring_init(NULL);
+    uint32_t sd_init_ms = to_ms_since_boot(get_absolute_time()) - sd_init_start;
+    printf("sd: ring_init took %lu ms (%s)\n",
+           (unsigned long)sd_init_ms, sd_ok ? "ok" : "failed");
+
+    // Seed the RAM ring's counter from the SD ring's recovered high-water
+    // mark, before any temp_ring_push() happens (example_ds18b20() below is
+    // the first caller) — otherwise seq would restart at 0 every boot while
+    // the SD ring keeps counting, and newly-pushed records would collide with
+    // slots the SD ring already considers occupied.
+    if (sd_ok) {
+        temp_ring_set_next_seq(sd_ring_next_seq());
+    }
 
     int wifi_err = wifi_connect(WIFI_COUNTRY, WIFI_SSID, WIFI_PASS, WIFI_AUTH);
     if (wifi_err) {

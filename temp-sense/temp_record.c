@@ -11,15 +11,25 @@
 static temp_record_t ring[TEMP_RING_CAPACITY];
 static uint32_t next_seq = 0;  // also the total ever pushed
 
+// The seq temp_ring_set_next_seq() jumped to, i.e. the first seq this boot
+// will ever actually write into `ring`. Everything below it is unwritten
+// this boot even though next_seq claims it happened, since RAM does not
+// persist across reboots the way the SD ring does.
+static uint32_t boot_start_seq = 0;
+
 // seq maps to a fixed slot (seq % capacity), so a record's position never
 // moves and no head index is needed.
 static inline size_t slot_of(uint32_t seq) {
     return (size_t)(seq % TEMP_RING_CAPACITY);
 }
 
-// The oldest seq still buffered.
+// The oldest seq actually present in RAM: bounded both by capacity and by
+// boot_start_seq, since a recovered non-zero starting seq means nothing
+// below it was written this boot (see temp_ring_set_next_seq()).
 static inline uint32_t oldest_seq(void) {
-    return next_seq > TEMP_RING_CAPACITY ? next_seq - TEMP_RING_CAPACITY : 0;
+    uint32_t capacity_floor =
+        next_seq > TEMP_RING_CAPACITY ? next_seq - TEMP_RING_CAPACITY : 0;
+    return capacity_floor > boot_start_seq ? capacity_floor : boot_start_seq;
 }
 
 uint32_t temp_ring_push(uint64_t romcode, uint32_t epoch, int16_t raw,
@@ -35,8 +45,13 @@ uint32_t temp_ring_push(uint64_t romcode, uint32_t epoch, int16_t raw,
     return seq;
 }
 
+void temp_ring_set_next_seq(uint32_t seq) {
+    next_seq = seq;
+    boot_start_seq = seq;
+}
+
 size_t temp_ring_count(void) {
-    return next_seq < TEMP_RING_CAPACITY ? next_seq : TEMP_RING_CAPACITY;
+    return next_seq - oldest_seq();
 }
 
 uint32_t temp_ring_next_seq(void) {
