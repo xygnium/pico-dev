@@ -515,14 +515,6 @@ void sd_ring_sync(void) {
 bool sd_ring_format(void) {
     static BYTE work[4096];  // static: too big for the stack
 
-    // Preserve seq continuity across the wipe. f_mkfs destroys ring.dat and
-    // meta.dat both, so sd_ring_init() below recovers 0/0 from the freshly
-    // empty card unless we restore these — and consumers may already have
-    // seen these seqs (CLAUDE.md: "sequence numbering does not restart after
-    // a format").
-    uint32_t pre_next_seq = next_seq;
-    uint32_t pre_published_seq = published_seq;
-
     if (ring_open) {
         f_close(&ring_fil);
         ring_open = false;
@@ -557,19 +549,15 @@ bool sd_ring_format(void) {
     }
     printf("sd: format complete, re-initialising\n");
 
-    if (!sd_ring_init(boot_dt_valid ? &boot_dt_copy : NULL)) {
-        return false;
-    }
-
-    if (pre_next_seq > next_seq) {
-        next_seq = pre_next_seq;
-        published_seq = pre_published_seq;
-        meta_dirty = true;
-        meta_store();
-        printf("sd: seq continuity preserved across format — next seq %lu\n",
-               (unsigned long)next_seq);
-    }
-    return true;
+    // Deliberately not preserving next_seq/published_seq across the wipe. A
+    // formatted card has no more prior history than a swapped-in blank one —
+    // sd_ring_init() already treats *that* case as a legitimate reset (see
+    // the scan_next_seq() comment on a swapped card above) — so format
+    // restarting the count the same way is consistent rather than a special
+    // case. A consumer downstream of MQTT has to detect a seq decrease as a
+    // lineage reset regardless, to handle the swap case; format doesn't need
+    // its own mechanism to dodge a problem that already exists elsewhere.
+    return sd_ring_init(boot_dt_valid ? &boot_dt_copy : NULL);
 }
 
 /* ----------------------------------------------------------------- status */

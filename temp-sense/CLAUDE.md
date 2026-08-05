@@ -127,19 +127,44 @@ Geiger-Müller pulses.
   `format` UDP command, guarded by the exact confirmation token
   `format yes-erase-the-card` (anything else, including a bare `format`, gets
   a refusal reply); `udp_client.py` also prompts before sending the real
-  token. Found and fixed a real gap while wiring this in: CLAUDE.md already
-  documented "sequence numbering does not restart after a format" as a
-  decided requirement, but `sd_ring_format()` as originally written just
-  re-ran `sd_ring_init()` after the `f_mkfs`, which would recover `next_seq 0`
-  from the now-empty card — the requirement was decided but never actually
-  implemented. Fixed by capturing `next_seq`/`published_seq` before the wipe
-  and restoring them if the post-format recovery comes back lower. Verified
-  on hardware: a bare `format` was refused/cancelled at the client prompt
-  with no data touched; a confirmed format wiped the card, recreated the
-  ring, and reported `next seq 261` in its own confirmation (continuing from
-  the live counter, not 0); a follow-up `sd` query showed `seq 0..269`,
-  continuing to climb from 261 as expected. See "SD implementation notes"
-  below for what that code already knows.
+  token. Verified on hardware: a bare `format` was refused/cancelled at the
+  client prompt with no data touched; a confirmed format wiped the card and
+  recreated the ring.
+  **Seq preservation across format: tried, then deliberately reverted
+  (2026-08-05).** First pass captured `next_seq`/`published_seq` before the
+  wipe and restored them afterward, on the premise that CLAUDE.md already
+  called seq-not-restarting a decided requirement — and hardware confirmed it
+  worked (`next seq 261` in the format confirmation, continuing from the live
+  counter rather than resetting). But that "decided requirement" didn't hold
+  up under scrutiny: `sd_ring_init()` already treats a **swapped** card as a
+  legitimate reset (see the `scan_next_seq()` comment on a swapped card,
+  below) — a formatted card has no more prior history than a swapped blank
+  one, so preserving continuity for one and not the other was an
+  inconsistency, not a fix. It also didn't close the risk it was meant to: a
+  consumer mistaking a reused low seq for a duplicate is equally possible
+  after a swap, which was never guarded. Reverted in favor of a uniform rule:
+  seq legitimately restarts at 0 after either a format or a swap, and a
+  future MQTT consumer detects a seq decrease as a lineage reset rather than
+  assuming monotonicity across the device's entire operational history.
+  Re-verified on hardware post-revert: the format confirmation showed
+  `sd: ring ready — ... next seq 0, published 0`, confirming the SD ring's
+  own bookkeeping resets exactly as coded, with no restoration. **One nuance
+  worth recording:** the very next records after that still carried `seq
+  1446, 1447...`, not 0 — not a bug. `sd_ring_put()` never generates a seq,
+  it only writes whatever seq the RAM ring (`temp_record.c`) hands it, and
+  the RAM ring only gets re-seeded from SD's recovered state at **boot**
+  (`temp_ring_set_next_seq()` in `main()`). A runtime `format` command
+  doesn't reboot, so the RAM ring's counter is untouched, and the first
+  post-format write just brings SD's bookkeeping back in line with it. So in
+  practice a *runtime* format never actually produces a seq decrease —
+  only a **reboot** onto a freshly-formatted or swapped card does, since
+  that's the one place the RAM ring's counter is re-seeded from SD. Left
+  as-is deliberately rather than adding a RAM-reseed call to the runtime
+  `format` handler to force an immediate reset — no duplicate-seq risk
+  exists to guard against here (nothing decreased), so that would be
+  complexity added on spec, not for a demonstrated need. **Confirmed on
+  hardware:** power-cycling after a format does show `seq` restart at 0, as
+  predicted — closing the loop on both halves of this behavior.
 - **Next up: MQTT — blocked on a broker, not yet started (as of 2026-08-05).**
   The SD ring is complete; nothing is published over the network yet — SD is
   durable storage but `read`/`sd` remain the only query paths. This is the
@@ -397,8 +422,21 @@ the reason.
   unmountable card is reported and left alone, since auto-formatting on mount
   failure destroys recoverable data exactly when the card is flaky. `f_mkfs` is
   restricted to `FM_FAT|FM_FAT32` (no exFAT), which any host will mount without
-  argument at 128MB. Sequence numbering does **not** restart after a format:
-  consumers have already seen those seqs.
+  argument at 128MB. **Sequence numbering restarts at 0 after a format** —
+  deliberately not preserved (see "Current status" for why this was tried and
+  reverted). A formatted card has no more prior history than a swapped-in
+  blank one, and `sd_ring_init()` already treats a swapped card as a
+  legitimate reset (the `scan_next_seq()` fallback above), so format doing
+  the same is consistent rather than a special case. Once MQTT exists, the
+  consumer has to detect a seq decrease as a lineage reset anyway, to handle
+  a swapped card — format doesn't need its own mechanism to dodge a problem
+  that already exists elsewhere. In practice this reset only takes effect on
+  the **next reboot**: `sd_ring_put()` writes whatever seq the RAM ring
+  hands it, and the RAM ring is only re-seeded from SD's recovered state at
+  boot, so a `format` issued at runtime leaves the RAM ring's live counter
+  untouched and the very next write just brings SD's bookkeeping back in
+  line with it — confirmed on hardware (seq continued climbing straight
+  through a runtime format with no decrease at all).
 - Two smaller ones: `FF_MIN_SS == FF_MAX_SS == 512` confirms the premise behind
   padding the on-SD record to 32 bytes; and `FF_FS_NORTC` is `0`, so FatFs asks
   the RP2040's *internal* RTC for file timestamps. That clock boots at year 0, so
