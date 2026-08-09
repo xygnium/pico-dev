@@ -13,6 +13,13 @@
 // (pico_cyw43_arch_lwip_threadsafe_background), not inline here.
 void mqtt_temp_init(void);
 
+// Call once per sensor cycle from the main loop, alongside wifi_udp_poll().
+// lwIP's MQTT client never reconnects on its own, so without this a single
+// dropped connection — a broker restart, a WiFi blip, an auth refusal —
+// leaves the firmware silently offline until reboot. Cheap when connected:
+// a flag test. Retries use a 5s..60s backoff.
+void mqtt_temp_poll(void);
+
 // True once CONNACK has been received for the current connection.
 bool mqtt_temp_connected(void);
 

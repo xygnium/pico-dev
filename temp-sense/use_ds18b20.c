@@ -22,6 +22,7 @@
 #include "temp_record.h"
 #include "temp_store.h"
 #include "sd_ring.h"
+#include "mqtt_client.h"
 
 // Modify these definitions as required, to match connections.
 #define ONEWIRE_GPIO_PIN 15
@@ -186,6 +187,9 @@ int example_ds18b20() {
         sd_ring_sync();
 
         wifi_udp_poll();
+        // lwIP's MQTT client never reconnects itself; this is what turns a
+        // dropped connection into a retry rather than silence until reboot.
+        mqtt_temp_poll();
         sleep_ms(5000);
     }
 

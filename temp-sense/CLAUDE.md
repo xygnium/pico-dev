@@ -204,10 +204,37 @@ Geiger-Müller pulses.
   disconnect plus a ~90s broker keepalive timeout (1.5 x keep_alive) before
   the broker flips the retained status to `offline`; a reflash mid-connection
   would do it.
-  **Known gap: there is no reconnect.** lwIP's MQTT client never retries on
-  its own, so after any refusal or drop the firmware stays silently
-  disconnected until reboot (confirmed — a single `mqtt:` line in ~40s on the
-  refused boot). Worth closing before step 2 builds on it.
+  **Reconnect is built and hardware-verified (2026-08-09).** lwIP's MQTT
+  client never retries on its own, so before this a single drop left the
+  firmware silently offline until reboot. `mqtt_temp_poll()` is called once
+  per sensor cycle from `use_ds18b20.c` alongside `wifi_udp_poll()` and
+  retries with a 5s..60s doubling backoff. Shape worth keeping:
+  - **The lwIP connection callback only records state; the main loop does the
+    reconnecting.** The client is mid-teardown when the callback fires for a
+    disconnect, so calling `mqtt_client_connect()` from inside it is not
+    safe. `s_connected`/`s_connecting` are `volatile` — they are the only
+    variables crossing the callback/main-loop boundary.
+  - **`s_ci` is file scope, not a stack local.** The Last Will and the
+    credentials must be re-presented on every CONNECT, so it has to outlive
+    `mqtt_temp_init()`.
+  - **Retries are quantized to the poll cadence** (~5.9s), so the nominal
+    5/10/20/40/60s backoff is observed as 5/12/24/41/64s. Expected, not drift.
+  - **If the broker *host* black-holes packets** (unplugged rather than
+    refusing), `s_connecting` stays set until lwIP's `MQTT_CONNECT_TIMOUT` of
+    100s — longer than the 60s cap, so retries pace at ~100s in that case.
+  **One defect found by testing and fixed:** resetting the backoff on connect
+  originally reset only the *interval* (`s_retry_ms`) and not the *deadline*
+  (`s_next_attempt`), which `try_connect()` had last computed using the old,
+  possibly capped interval. A disconnect shortly after recovering from a long
+  outage was therefore retried up to a full 60s late — measured at 23s where
+  ~6s was intended. Both halves are now reset together. Verified by
+  reproducing the exact precondition (capped backoff, reconnect, then a
+  broker restart inside the 60s window): 6s observed against ~48s for the
+  unfixed path.
+  Verified on hardware across `./ctl.sh` broker restart/stop/start: recovery
+  in ~6s from a restart, backoff growth to the 60s cap over a ~29 minute
+  outage, reconnect on the first attempt once the broker returned, and `seq`
+  contiguous throughout — MQTT being down never stalls the sensor loop or SD.
   Priority is to iterate on WiFi here in temp-sense first, then backport the
   shared `common/wifi` usage to gmcount once this is working.
 
