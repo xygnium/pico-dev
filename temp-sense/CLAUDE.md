@@ -10,61 +10,51 @@ Geiger-Müller pulses.
 
 ## Current status
 
-- **Last updated:** 2026-08-05
-- **Done:** Hardware verified on real DS18B20 sensors (3 devices detected and working).
-  Fixed two pico-examples bugs: Issue #422 (conversion wait timing) and Issue #569 (CRC
-  validation). All sensor reads now pass CRC validation; no bus errors detected.
-  WiFi/UDP is now live: connects via a new shared `../common/wifi/` library (`picowifi`,
-  extracted from gmcount's `wifi.c` so it isn't duplicated per-project — see
-  `../common/wifi/wifi.h`), listens on UDP port 8080, and answers a `read` command with
-  the latest DS18B20 readings, one rom-keyed line per sensor. Any other command still
-  gets a generic ack. Verified hardware round-trip with `udp_client.py` (points at
-  `192.168.1.120` — update if the Pico W's DHCP lease changes). Credentials live in a
-  gitignored `wifi_secrets.h` (currently reusing gmcount's `abzu2` network).
-  Fixed a real DS3231 hardware bug found on this board: SDA/SCL were wired to GPIO26/27
-  (I2C1), which hung the per-cycle RTC read (`ds3231_get_datetime()`) indefinitely on a
-  NACKed I2C transaction — silently killing the whole sensor loop (and, with it,
-  `wifi_udp_poll()`, so UDP stopped responding too). Rewired to GPIO8/9 (I2C0); see
-  Architecture below. Also fixed `cyw43_arch_wifi_connect_blocking()` intermittently
-  failing on the first attempt or two (`wifi_connect()` in `../common/wifi/wifi.c` now
-  retries up to 5 times with a 1s delay, logging each failed attempt) — confirmed
-  connecting reliably across repeated power-cycles.
-  The DS3231's clock is now settable over the same UDP channel: `settime YYYY-MM-DD
-  HH:MM:SS D` (D = day-of-week 1..7, 1=Monday, per `api_ds3231.h`). Verified on
-  hardware. `udp_client.py settime` with no further arguments fills in the current
-  time, so the Pico does no timezone handling — it stores whatever digits it is
-  sent, and the host owns that decision. Deliberately a manual command rather than
-  a hardcoded `ds3231_set_datetime()` call, which would re-run on every boot and
-  reset the clock to build time. The battery-backed RTC keeps time across power
-  cycles, so this is normally a one-time step.
-  **Phase 3, part 1 is built:** the canonical `temp_record_t` and its in-RAM ring
-  buffer now exist (`temp_record.h`/`temp_record.c`), and serial, `read` and
-  `settime` are all serializers over them rather than three formatting paths. Each
-  DS18B20 reading is pushed as a record (`seq`, epoch, romcode, raw 1/16 degC,
-  flags); CRC failures are pushed too, flagged rather than dropped, so a bad read
-  shows as a gap instead of vanishing. `read` looks up the newest record per sensor
-  by **romcode** via `temp_ring_latest_for_rom()`, which closes the index-remapping
-  bug described below, and prints each sensor's own timestamp so a sensor that
-  stopped reporting reads as stale rather than hiding behind a batch header.
-  Timestamps are stored as a 4-byte epoch and formatted only at output, by
-  `temp_format_epoch()`; `g_temp_celsius`/`g_temp_valid`/`g_temp_timestamp` are gone
-  and `temp_store.h` is now just the sensor roster plus the RTC handle.
-  The epoch conversions use days-from-civil rather than `mktime()`, which would
-  apply the C library's local timezone to datetimes that are UTC by convention —
-  verified on the host against `timegm()`/`strftime()` across the DS3231's full
-  2000–2099 range. Verified on hardware: contiguous `seq`, correct UTC timestamps,
-  `read` and `settime` both round-tripping.
+*Hardware test evidence for everything in this section — exact timestamps,
+serial excerpts, specific `seq` numbers — lives in `VERIFICATION.md`, not
+here, so routine sessions aren't paying to load it.*
+
+- **Last updated:** 2026-08-09
+- **Done:** Hardware verified on real DS18B20 sensors (3 devices, CRC clean —
+  fixed pico-examples Issues #422 and #569 along the way). WiFi/UDP is live
+  via the shared `../common/wifi/` library (`picowifi`, extracted from
+  gmcount's `wifi.c` — see `../common/wifi/wifi.h`): listens on UDP port
+  8080, answers `read` with the latest DS18B20 readings (one rom-keyed line
+  per sensor), any other command gets a generic ack. Credentials live in a
+  gitignored `wifi_secrets.h`.
+  Fixed a real DS3231 hardware bug on this board: SDA/SCL were wired to
+  GPIO26/27 (I2C1), which hung the per-cycle RTC read
+  (`ds3231_get_datetime()`) indefinitely on a NACKed I2C transaction —
+  silently killing the whole sensor loop and, with it, `wifi_udp_poll()`.
+  Rewired to GPIO8/9 (I2C0); see Architecture below.
+  `settime YYYY-MM-DD HH:MM:SS D` (D = day-of-week 1..7, 1=Monday, per
+  `api_ds3231.h`) sets the DS3231's clock over UDP; `udp_client.py settime`
+  with no arguments fills in the current time, so the Pico does no timezone
+  handling — it stores whatever digits it's sent, and the host owns that
+  decision. Deliberately manual rather than a hardcoded
+  `ds3231_set_datetime()` call, which would reset the clock to build time on
+  every boot; the battery-backed RTC holds across power cycles, so this is
+  normally a one-time step.
+  **Phase 3, part 1 (canonical record + RAM ring) is built:**
+  `temp_record_t`/`temp_record.c` — serial, `read` and `settime` are all
+  serializers over one ring rather than three separate formatting paths.
+  CRC failures are pushed as flagged records rather than dropped, so a bad
+  read shows as a gap instead of vanishing. `read` looks up the newest
+  record **by romcode** (`temp_ring_latest_for_rom()`, closing a latent
+  index-remapping bug — see "Planned" below), and timestamps are a 4-byte
+  epoch formatted only at output (`temp_format_epoch()`), using
+  days-from-civil rather than `mktime()` (see UTC convention below for why).
 - **Boot-time RTC plausibility check** (`temp_time_is_plausible()`,
-  `g_rtc_time_valid`): if the DS3231's backup cell dies it powers up at 2000-01-01
-  and would timestamp everything confidently wrong, so any epoch before 2020-01-01
-  triggers a loud serial warning at boot and a `warning:` line on the `read` reply.
-  Re-checked each sensor cycle, so `settime` clears it on its own. This is what
-  replaced the dropped SNTP sync — see phase 3 below for that reasoning. Threshold
-  host-verified against `timegm()`; verified on hardware for the good-clock path
-  (boot prints `rtc: <time> UTC`, no warning on `read`). The **warning path has
-  not been exercised on hardware** — that needs a boot with the RTC actually
-  unset (pull the CR2032 while unpowered, or temporarily raise
-  `TEMP_TIME_PLAUSIBLE_EPOCH` past the current time to force one trip).
+  `g_rtc_time_valid`): if the DS3231's backup cell dies it powers up at
+  2000-01-01 and would timestamp everything confidently wrong, so any epoch
+  before 2020-01-01 (`TEMP_TIME_PLAUSIBLE_EPOCH`) triggers a loud serial
+  warning at boot and a `warning:` line on the `read` reply. Re-checked each
+  sensor cycle, so `settime` clears it on its own. This is what replaced the
+  dropped SNTP sync — see "Planned" below for that reasoning.
+  **The warning path has not been exercised on hardware** — that needs a
+  boot with the RTC actually unset (pull the CR2032 while unpowered, or
+  temporarily raise `TEMP_TIME_PLAUSIBLE_EPOCH` past the current time to
+  force one trip).
 - **The RTC is kept in UTC, by convention.** Nothing in the firmware enforces it —
   the DS3231 just stores digits — so every reported timestamp is labelled `UTC`
   (serial output, the `read` reply, and the `settime` confirmation) to keep the
@@ -77,112 +67,83 @@ Geiger-Müller pulses.
   that raw serial output reads as UTC; `udp_client.py` prints the local equivalent
   alongside, and doing the conversion on-device would mean putting DST rules in
   firmware, which is exactly the complexity being avoided.
-- **SD bring-up, step 1 of 4 (mount + report), is hardware-verified (2026-08-05)**
-  — superseded in the build by step 2's `sd_ring.c` below, but `sd_probe.c`
-  stays on disk as a simpler fallback smoke test. It mounts the card and
-  prints its size, free space, cluster size and directory listing, then
-  stops — it writes nothing. `hw_config.c` is copied from
-  `../gmcount/` (byte-identical to `../sdsc/`'s): SPI0, SCK=18, MOSI=19, MISO=16,
-  CS=17, clear of the 1-Wire GPIO15, I2C0 GPIO8/9 and the CYW43's 23/24/25/29.
-  Wiring follows the spec in `notes.md`. On hardware: `245760 sectors (120 MB)`,
-  `119 MB free, cluster size 2048 bytes`, card empty, `sd probe: OK` — the card
-  labelled 128MB reports 120MB formatted, as expected. Mount failure reports and
-  returns rather than panicking the way `../gmcount/fatfs.c` does: a headless
-  logger that halts on a bad card also stops answering UDP. Cluster size is
-  printed deliberately — it decides how much slack the 64MB ring costs in step
-  2, and boot is the cheapest moment to learn it.
-- **The SD work is deliberately staged into four flashable steps**, because the
-  only real test here is flash-and-observe and a large unflashed change mixes
-  unverified hardware assumptions with unverified software ones:
-  1. mount and report [in the build, hardware-verified 2026-08-05] — *is it wired right?*
-  2. ring open + preallocate [in the build, hardware-verified 2026-08-05] —
-     *does `ring.dat` get created at 64MB, how slow?*
-  3. write path in the sensor loop + `sd` status command [in the build,
-     hardware-verified 2026-08-05] — *do records accumulate, does `seq`
-     survive a reboot?*
-  4. `format` command [in the build, hardware-verified 2026-08-05] — *does a
-     blank card recover?*
-  **All four steps are done.** The SD ring is fully built and verified.
+- **SD bring-up, step 1 of 4 (mount + report), superseded in the build by
+  step 2's `sd_ring.c`** — `sd_probe.c` stays on disk as a simpler fallback
+  smoke test (mounts, prints size/free space/cluster size/directory listing,
+  writes nothing). `hw_config.c` is copied from `../gmcount/` (byte-identical
+  to `../sdsc/`'s): SPI0, SCK=18, MOSI=19, MISO=16, CS=17, clear of the
+  1-Wire GPIO15, I2C0 GPIO8/9 and the CYW43's 23/24/25/29. Wiring follows the
+  spec in `notes.md`. Mount failure reports and returns rather than
+  panicking the way `../gmcount/fatfs.c` does: a headless logger that halts
+  on a bad card also stops answering UDP.
+- **The SD work was deliberately staged into four flashable steps** — mount
+  + report, ring open + preallocate, write path + `sd` status command,
+  `format` command — because the only real test here is flash-and-observe
+  and a large unflashed change mixes unverified hardware assumptions with
+  unverified software ones. **All four are done and hardware-verified
+  (2026-08-05, see `VERIFICATION.md`).**
   Step 2 (`sd_ring.c`/`sd_ring.h`, superseding `sd_probe.c`) is in
-  `CMakeLists.txt`; on hardware, first boot preallocated `ring.dat` to 64MB in
-  1621ms, a later boot with `ring.dat` already sized took 127-377ms, found no
-  `meta.dat` (expected — first boot), and the fallback scan correctly
-  recovered an empty ring (`next seq 0`). `sd_ring_init(NULL)` is called from
-  `temp-sense.c` before the DS3231 has been read, so FatFs file timestamps
-  aren't seeded yet — cosmetic only, doesn't touch ring data; worth revisiting
-  when RTC init is reordered ahead of SD. Step 3: `use_ds18b20.c`'s sensor
-  loop now calls `sd_ring_put()` alongside `temp_ring_push()` for every
-  reading, and `sd_ring_sync()` once per cycle; `temp-sense.c` answers a new
-  `sd` UDP command via `sd_ring_status()`. Needed a real fix beyond just
-  wiring calls in: the RAM ring's `next_seq` used to always start at 0, which
-  would have collided with seqs already on the SD card after a reboot, so
+  `CMakeLists.txt`. `sd_ring_init(NULL)` is called from `temp-sense.c`
+  before the DS3231 has been read, so FatFs file timestamps aren't seeded
+  yet — cosmetic only, doesn't touch ring data; worth revisiting when RTC
+  init is reordered ahead of SD.
+  Step 3 needed a real fix beyond wiring calls in: the RAM ring's
+  `next_seq` used to always start at 0, which would have collided with
+  seqs already on the SD card after a reboot, so
   `temp_ring_set_next_seq()` (`temp_record.c`) now seeds it from
-  `sd_ring_next_seq()` at boot — and `temp_ring_count()`/`oldest_seq()` were
-  fixed to bound RAM presence by that seed too, so they no longer claim slots
-  are populated that were never written this boot. Verified on hardware:
-  `seq` incremented across cycles, survived a reflash (continued at seq 39
-  rather than resetting to 0), and `sd` replied
-  `capacity 2097152 stored 81 seq 0..80 published 0 backlog 81` — consistent
-  with what had actually been written. Step 4: `temp-sense.c` answers a new
-  `format` UDP command, guarded by the exact confirmation token
-  `format yes-erase-the-card` (anything else, including a bare `format`, gets
-  a refusal reply); `udp_client.py` also prompts before sending the real
-  token. Verified on hardware: a bare `format` was refused/cancelled at the
-  client prompt with no data touched; a confirmed format wiped the card and
-  recreated the ring.
+  `sd_ring_next_seq()` at boot — and `temp_ring_count()`/`oldest_seq()`
+  were fixed to bound RAM presence by that seed too, so they no longer
+  claim slots are populated that were never written this boot.
+  Step 4: `temp-sense.c` answers a `format` UDP command, guarded by the
+  exact confirmation token `format yes-erase-the-card` (anything else,
+  including a bare `format`, gets a refusal reply); `udp_client.py` also
+  prompts before sending the real token.
   **Seq preservation across format: tried, then deliberately reverted
   (2026-08-05).** First pass captured `next_seq`/`published_seq` before the
-  wipe and restored them afterward, on the premise that CLAUDE.md already
-  called seq-not-restarting a decided requirement — and hardware confirmed it
-  worked (`next seq 261` in the format confirmation, continuing from the live
-  counter rather than resetting). But that "decided requirement" didn't hold
-  up under scrutiny: `sd_ring_init()` already treats a **swapped** card as a
-  legitimate reset (see the `scan_next_seq()` comment on a swapped card,
-  below) — a formatted card has no more prior history than a swapped blank
-  one, so preserving continuity for one and not the other was an
-  inconsistency, not a fix. It also didn't close the risk it was meant to: a
-  consumer mistaking a reused low seq for a duplicate is equally possible
-  after a swap, which was never guarded. Reverted in favor of a uniform rule:
-  seq legitimately restarts at 0 after either a format or a swap, and a
-  future MQTT consumer detects a seq decrease as a lineage reset rather than
-  assuming monotonicity across the device's entire operational history.
-  Re-verified on hardware post-revert: the format confirmation showed
-  `sd: ring ready — ... next seq 0, published 0`, confirming the SD ring's
-  own bookkeeping resets exactly as coded, with no restoration. **One nuance
-  worth recording:** the very next records after that still carried `seq
-  1446, 1447...`, not 0 — not a bug. `sd_ring_put()` never generates a seq,
-  it only writes whatever seq the RAM ring (`temp_record.c`) hands it, and
-  the RAM ring only gets re-seeded from SD's recovered state at **boot**
-  (`temp_ring_set_next_seq()` in `main()`). A runtime `format` command
-  doesn't reboot, so the RAM ring's counter is untouched, and the first
-  post-format write just brings SD's bookkeeping back in line with it. So in
-  practice a *runtime* format never actually produces a seq decrease —
-  only a **reboot** onto a freshly-formatted or swapped card does, since
-  that's the one place the RAM ring's counter is re-seeded from SD. Left
-  as-is deliberately rather than adding a RAM-reseed call to the runtime
-  `format` handler to force an immediate reset — no duplicate-seq risk
-  exists to guard against here (nothing decreased), so that would be
-  complexity added on spec, not for a demonstrated need. **Confirmed on
-  hardware:** power-cycling after a format does show `seq` restart at 0, as
-  predicted — closing the loop on both halves of this behavior.
-- **MQTT step 1 of 3 (connect + Last Will) is hardware-verified (2026-08-09).**
-  The broker is mosquitto on dev10 at `192.168.1.88:1883` (address and
-  credentials in the gitignored `wifi_secrets.h`). `mqtt_client.c`/`.h` connect
-  after `wifi_connect()` succeeds, register a Last Will on
+  wipe and restored them afterward, on the premise that seq-not-restarting
+  was a decided requirement — and it worked on hardware. But that premise
+  didn't hold up under scrutiny: `sd_ring_init()` already treats a
+  **swapped** card as a legitimate reset (see the `scan_next_seq()` comment
+  on a swapped card, below) — a formatted card has no more prior history
+  than a swapped blank one, so preserving continuity for one and not the
+  other was an inconsistency, not a fix. It also didn't close the risk it
+  was meant to: a consumer mistaking a reused low seq for a duplicate is
+  equally possible after a swap, which was never guarded. Reverted in favor
+  of a uniform rule: **seq legitimately restarts at 0 after either a format
+  or a swap**, and a future MQTT consumer detects a seq decrease as a
+  lineage reset rather than assuming monotonicity across the device's
+  entire operational history.
+  One nuance worth keeping: a *runtime* `format` command never itself
+  produces a visible seq decrease, only a **reboot** onto a
+  freshly-formatted or swapped card does — `sd_ring_put()` writes whatever
+  seq the RAM ring hands it, and the RAM ring is only re-seeded from SD's
+  recovered state at boot, so a runtime format leaves the RAM ring's live
+  counter untouched and the first post-format write just brings SD's
+  bookkeeping back in line with it. Left as-is deliberately rather than
+  adding a RAM-reseed call to force an immediate reset — no duplicate-seq
+  risk exists to guard against here, so that would be complexity added on
+  spec, not for a demonstrated need.
+- **MQTT step 1 of 3 (connect + Last Will) is done and hardware-verified
+  (2026-08-09, see `VERIFICATION.md`).** The broker is mosquitto on dev10 at
+  `192.168.1.88:1883` (address and credentials in the gitignored
+  `wifi_secrets.h`; `./ctl.sh {start|stop|restart|status}` on dev10 controls
+  it, useful for exercising outage/recovery behavior). `mqtt_client.c`/`.h`
+  connect after `wifi_connect()` succeeds, register a Last Will on
   `sensors/temp-sense/status` (retained, `offline`) and publish retained
-  `online` on CONNACK. **No sensor data is published yet** — that's steps 2/3,
-  so `read`/`sd` remain the only query paths and SD is still the only place
-  readings land.
+  `online` on CONNACK. **No sensor data is published yet** — that's steps
+  2/3, so `read`/`sd` remain the only query paths and SD is still the only
+  place readings land.
   This is the last leg of the 3-phase WiFi path: (1) hello-world UDP echo
   [done], (2) useful on-demand query capability [done,
-  `read`/`sd`/`settime`/`format` commands], (3) migrate to MQTT [in progress]
-  — lwIP already vendors an MQTT client at `pico-sdk/lib/lwip/src/apps/mqtt`,
-  so no new dependency was needed. See "Planned: storage & MQTT reporting"
-  below for the agreed design: retained per-sensor topics, Last Will, a
-  published watermark read back from the SD ring, v1 publishes everything with
-  no thinning. **Staging mirrors the SD 4-step plan** — (1) connect + Last
-  Will only [done], (2) publish one retained reading on command, (3) full
-  watermark-driven publish loop — not one large unflashed change.
+  `read`/`sd`/`settime`/`format` commands], (3) migrate to MQTT [in
+  progress] — lwIP already vendors an MQTT client at
+  `pico-sdk/lib/lwip/src/apps/mqtt`, so no new dependency was needed. See
+  "Planned: storage & MQTT reporting" below for the agreed design: retained
+  per-sensor topics, Last Will, a published watermark read back from the SD
+  ring, v1 publishes everything with no thinning. **Staging mirrors the SD
+  4-step plan** — (1) connect + Last Will only [done], (2) publish one
+  retained reading on command, (3) full watermark-driven publish loop — not
+  one large unflashed change.
   Two things step 1 needed that weren't in the plan:
   - **`MEMP_NUM_SYS_TIMEOUT` had to be raised** in the *shared*
     `../common/wifi/lwipopts.h` to `LWIP_NUM_SYS_TIMEOUT_INTERNAL + 1`.
@@ -190,59 +151,46 @@ Geiger-Müller pulses.
     (`mqtt.c:620`) and isn't counted in the internal total, so without this
     the timeout pool empties ~5s after connect (`MQTT_CYCLIC_TIMER_INTERVAL`)
     and panics. That file is shared, so this affects gmcount/wifi/wifi2 too.
-  - **The broker refuses anonymous connects.** First flash returned CONNACK
-    status 5 (`MQTT_CONNECT_REFUSED_NOT_AUTHORIZED_`, `lwip/apps/mqtt.h:110`)
-    because `memset(&ci, 0, ...)` left `client_user`/`client_pass` NULL.
-    Both are now set from `MQTT_USER`/`MQTT_PASS`; note MQTT 3.1.1 has no
-    password-without-username form, so it must be both or neither.
-  Verified on hardware: `mqtt: connected to 192.168.1.88:1883`, 112s uptime
-  with no disconnect or panic (past the 5s cyclic timer and the 60s keepalive
-  PINGREQ), and `mosquitto_sub -t 'sensors/temp-sense/#'` returns
-  `sensors/temp-sense/status online` immediately — which is what proves the
-  retain flag took. Only `status` is present, as expected for step 1.
-  **The Last Will is verified under real power loss (2026-08-09.)** DUT power
-  pulled at 13:21:59, retained `offline` published at 13:22:46 — 47s later —
-  and the DUT reconnected and republished retained `online` ~8s after boot.
-  The timing confirms the mechanism, not just the outcome: the broker
-  publishes the will 90s (1.5 x the 60s keep_alive) after the **last packet
-  it received**, and 13:22:46 - 90s = 13:21:16, exactly the DUT's last
-  keepalive PINGREQ. Power was pulled 43s into that ping cycle, so expect
-  `offline` anywhere in a **30-90s window** after a real failure depending on
-  where in the cycle the device dies — not a fixed 90s. Note this is the
-  faithful test: earlier `offline` messages seen during broker restarts came
-  from mosquitto terminating sessions on shutdown, which is a different path
-  and does not exercise keepalive expiry at all.
-  **Reconnect is built and hardware-verified (2026-08-09).** lwIP's MQTT
-  client never retries on its own, so before this a single drop left the
-  firmware silently offline until reboot. `mqtt_temp_poll()` is called once
-  per sensor cycle from `use_ds18b20.c` alongside `wifi_udp_poll()` and
-  retries with a 5s..60s doubling backoff. Shape worth keeping:
-  - **The lwIP connection callback only records state; the main loop does the
-    reconnecting.** The client is mid-teardown when the callback fires for a
-    disconnect, so calling `mqtt_client_connect()` from inside it is not
-    safe. `s_connected`/`s_connecting` are `volatile` — they are the only
-    variables crossing the callback/main-loop boundary.
+  - **The broker refuses anonymous connects** (CONNACK status 5,
+    `MQTT_CONNECT_REFUSED_NOT_AUTHORIZED_`, `lwip/apps/mqtt.h:110`).
+    `client_user`/`client_pass` are set from `MQTT_USER`/`MQTT_PASS`; note
+    MQTT 3.1.1 has no password-without-username form, so it must be both or
+    neither.
+  **The Last Will is verified under real power loss.** The observable
+  window after a real DUT failure is **30-90s**, not a fixed 90s: the broker
+  publishes the will 1.5x the 60s keep_alive after the *last packet it
+  received*, not from the failure instant, so the delay depends on where in
+  the 60s ping cycle the device dies. Earlier `offline` messages seen during
+  broker restarts are a different path (mosquitto terminating sessions on
+  shutdown) and don't exercise keepalive expiry at all — the power-loss test
+  is the faithful one.
+  **Reconnect is built and hardware-verified.** lwIP's MQTT client never
+  retries on its own, so before this a single drop left the firmware
+  silently offline until reboot. `mqtt_temp_poll()` is called once per
+  sensor cycle from `use_ds18b20.c` alongside `wifi_udp_poll()` and retries
+  with a 5s..60s doubling backoff. Shape worth keeping:
+  - **The lwIP connection callback only records state; the main loop does
+    the reconnecting.** The client is mid-teardown when the callback fires
+    for a disconnect, so calling `mqtt_client_connect()` from inside it is
+    not safe. `s_connected`/`s_connecting` are `volatile` — they are the
+    only variables crossing the callback/main-loop boundary.
   - **`s_ci` is file scope, not a stack local.** The Last Will and the
     credentials must be re-presented on every CONNECT, so it has to outlive
     `mqtt_temp_init()`.
   - **Retries are quantized to the poll cadence** (~5.9s), so the nominal
-    5/10/20/40/60s backoff is observed as 5/12/24/41/64s. Expected, not drift.
+    5/10/20/40/60s backoff is observed a few seconds later each step.
+    Expected, not drift.
   - **If the broker *host* black-holes packets** (unplugged rather than
     refusing), `s_connecting` stays set until lwIP's `MQTT_CONNECT_TIMOUT` of
     100s — longer than the 60s cap, so retries pace at ~100s in that case.
-  **One defect found by testing and fixed:** resetting the backoff on connect
-  originally reset only the *interval* (`s_retry_ms`) and not the *deadline*
-  (`s_next_attempt`), which `try_connect()` had last computed using the old,
-  possibly capped interval. A disconnect shortly after recovering from a long
-  outage was therefore retried up to a full 60s late — measured at 23s where
-  ~6s was intended. Both halves are now reset together. Verified by
-  reproducing the exact precondition (capped backoff, reconnect, then a
-  broker restart inside the 60s window): 6s observed against ~48s for the
-  unfixed path.
-  Verified on hardware across `./ctl.sh` broker restart/stop/start: recovery
-  in ~6s from a restart, backoff growth to the 60s cap over a ~29 minute
-  outage, reconnect on the first attempt once the broker returned, and `seq`
-  contiguous throughout — MQTT being down never stalls the sensor loop or SD.
+  **One defect found by testing and fixed:** resetting the backoff on
+  connect originally reset only the *interval* (`s_retry_ms`) and not the
+  *deadline* (`s_next_attempt`), which `try_connect()` had last computed
+  using the old, possibly capped interval. A disconnect shortly after
+  recovering from a long outage was therefore retried up to a full 60s late.
+  Both halves are now reset together — verified by reproducing the exact
+  precondition (capped backoff, reconnect, then a second failure inside the
+  60s window).
   Priority is to iterate on WiFi here in temp-sense first, then backport the
   shared `common/wifi` usage to gmcount once this is working.
 
