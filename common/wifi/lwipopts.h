@@ -51,6 +51,12 @@
 #define DHCP_DOES_ARP_CHECK 0
 #define LWIP_DHCP_DOES_ACD_CHECK 0
 
+// lwip/apps/mqtt.c (temp-sense) re-arms its own cyclic timer via
+// sys_timeout(), which LWIP_NUM_SYS_TIMEOUT_INTERNAL doesn't account for —
+// only TCP/ARP/DHCP/DNS internals. Without this, the pool empties ~5s after
+// MQTT connects (MQTT_CYCLIC_TIMER_INTERVAL) and panics.
+#define MEMP_NUM_SYS_TIMEOUT (LWIP_NUM_SYS_TIMEOUT_INTERNAL + 1)
+
 #ifndef NDEBUG
 #define LWIP_DEBUG 1
 #define LWIP_STATS 1

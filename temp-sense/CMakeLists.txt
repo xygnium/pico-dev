@@ -19,6 +19,7 @@ add_executable(temp-sense
     sd_ring.c
     hw_config.c
     api_ds3231.c
+    mqtt_client.c
 )
 
 target_include_directories(temp-sense PRIVATE ${CMAKE_CURRENT_LIST_DIR})
@@ -29,6 +30,7 @@ target_link_libraries(temp-sense
     hardware_pio
     onewire_library
     picowifi
+    pico_lwip_mqtt
     FatFs_SPI
 )
 

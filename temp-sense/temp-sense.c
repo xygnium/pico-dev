@@ -7,6 +7,7 @@
 #include "temp_record.h"
 #include "temp_store.h"
 #include "sd_ring.h"
+#include "mqtt_client.h"
 
 extern int example_ds18b20();
 
@@ -161,6 +162,10 @@ int main() {
     int wifi_err = wifi_connect(WIFI_COUNTRY, WIFI_SSID, WIFI_PASS, WIFI_AUTH);
     if (wifi_err) {
         printf("wifi: connect failed (err %d)\n", wifi_err);
+    } else {
+        // MQTT step 1: connect + Last Will only (see temp-sense/CLAUDE.md).
+        // No sensor data published yet.
+        mqtt_temp_init();
     }
     wifi_udp_start(8080, handle_wifi_cmd);
 

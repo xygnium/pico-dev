@@ -165,23 +165,49 @@ Geiger-Müller pulses.
   complexity added on spec, not for a demonstrated need. **Confirmed on
   hardware:** power-cycling after a format does show `seq` restart at 0, as
   predicted — closing the loop on both halves of this behavior.
-- **Next up: MQTT — blocked on a broker, not yet started (as of 2026-08-05).**
-  The SD ring is complete; nothing is published over the network yet — SD is
-  durable storage but `read`/`sd` remain the only query paths. This is the
-  last leg of the 3-phase WiFi path: (1) hello-world UDP echo [done], (2)
-  useful on-demand query capability [done, `read`/`sd`/`settime`/`format`
-  commands], (3) migrate to MQTT (lwIP already vendors an MQTT client at
-  `pico-sdk/lib/lwip/src/apps/mqtt`, so no new dependency needed) — see
-  "Planned: storage & MQTT reporting" below for the agreed design: retained
-  per-sensor topics, Last Will, a published watermark read back from the SD
-  ring, v1 publishes everything with no thinning. **Waiting on the user to
-  bring up a broker** before any of this can be flash-tested — do not start
-  writing the MQTT client until a broker address is provided. **Agreed
-  staging approach once it's ready:** flashable steps mirroring the SD
-  4-step plan above (e.g. (1) connect + Last Will only, (2) publish one
-  retained reading on command, (3) full watermark-driven publish loop),
-  not one large unflashed change — see "small increments" precedent set by
-  the SD work.
+- **MQTT step 1 of 3 (connect + Last Will) is hardware-verified (2026-08-09).**
+  The broker is mosquitto on dev10 at `192.168.1.88:1883` (address and
+  credentials in the gitignored `wifi_secrets.h`). `mqtt_client.c`/`.h` connect
+  after `wifi_connect()` succeeds, register a Last Will on
+  `sensors/temp-sense/status` (retained, `offline`) and publish retained
+  `online` on CONNACK. **No sensor data is published yet** — that's steps 2/3,
+  so `read`/`sd` remain the only query paths and SD is still the only place
+  readings land.
+  This is the last leg of the 3-phase WiFi path: (1) hello-world UDP echo
+  [done], (2) useful on-demand query capability [done,
+  `read`/`sd`/`settime`/`format` commands], (3) migrate to MQTT [in progress]
+  — lwIP already vendors an MQTT client at `pico-sdk/lib/lwip/src/apps/mqtt`,
+  so no new dependency was needed. See "Planned: storage & MQTT reporting"
+  below for the agreed design: retained per-sensor topics, Last Will, a
+  published watermark read back from the SD ring, v1 publishes everything with
+  no thinning. **Staging mirrors the SD 4-step plan** — (1) connect + Last
+  Will only [done], (2) publish one retained reading on command, (3) full
+  watermark-driven publish loop — not one large unflashed change.
+  Two things step 1 needed that weren't in the plan:
+  - **`MEMP_NUM_SYS_TIMEOUT` had to be raised** in the *shared*
+    `../common/wifi/lwipopts.h` to `LWIP_NUM_SYS_TIMEOUT_INTERNAL + 1`.
+    lwIP's MQTT app re-arms its own cyclic timer via `sys_timeout()`
+    (`mqtt.c:620`) and isn't counted in the internal total, so without this
+    the timeout pool empties ~5s after connect (`MQTT_CYCLIC_TIMER_INTERVAL`)
+    and panics. That file is shared, so this affects gmcount/wifi/wifi2 too.
+  - **The broker refuses anonymous connects.** First flash returned CONNACK
+    status 5 (`MQTT_CONNECT_REFUSED_NOT_AUTHORIZED_`, `lwip/apps/mqtt.h:110`)
+    because `memset(&ci, 0, ...)` left `client_user`/`client_pass` NULL.
+    Both are now set from `MQTT_USER`/`MQTT_PASS`; note MQTT 3.1.1 has no
+    password-without-username form, so it must be both or neither.
+  Verified on hardware: `mqtt: connected to 192.168.1.88:1883`, 112s uptime
+  with no disconnect or panic (past the 5s cyclic timer and the 60s keepalive
+  PINGREQ), and `mosquitto_sub -t 'sensors/temp-sense/#'` returns
+  `sensors/temp-sense/status online` immediately — which is what proves the
+  retain flag took. Only `status` is present, as expected for step 1.
+  **Not yet tested: the Last Will itself.** It needs an ungraceful
+  disconnect plus a ~90s broker keepalive timeout (1.5 x keep_alive) before
+  the broker flips the retained status to `offline`; a reflash mid-connection
+  would do it.
+  **Known gap: there is no reconnect.** lwIP's MQTT client never retries on
+  its own, so after any refusal or drop the firmware stays silently
+  disconnected until reboot (confirmed — a single `mqtt:` line in ~40s on the
+  refused boot). Worth closing before step 2 builds on it.
   Priority is to iterate on WiFi here in temp-sense first, then backport the
   shared `common/wifi` usage to gmcount once this is working.
 
@@ -468,6 +494,30 @@ none belongs in an unflashed change.
   importantly the roster is *discovered* by `ow_romsearch()`, so any layout
   invariant built on a fixed sensor count breaks quietly when one drops off —
   the same fragility already designed out by keying on `romcode`.
+- **Slow the sample rate to ~30s before production deployment — 5s is far too
+  fast.** [advised 2026-08-09, deliberately deferred to pre-deployment] The
+  loop is `sleep_ms(5000)` at `use_ds18b20.c:189`, but the real period is
+  **~5.9s**: the sleep runs *after* the 800ms conversion wait and the reads,
+  so work time adds on top (confirmed in serial — 11:04:56 → 11:05:02 →
+  11:05:07 → 11:05:13). The evidence that this oversamples is in the data
+  itself: sensor `0x2424` across 142s read 26.75, 26.69, 26.69, 26.69, 26.75,
+  26.75 — a 0.06 °C swing, i.e. exactly one LSB (1/16 °C) on a part specced
+  at ±0.5 °C. That is quantization dither, not signal; a TO-92 DS18B20 in
+  still air has a thermal time constant in the minutes, so 5s oversamples the
+  physics by ~2 orders of magnitude. Going to 30s takes records/day from
+  ~43,900 to 8,640, SD ring retention from ~48 days to **~242 days**, ring
+  recycles/year from ~7.6 to ~1.5, and step-3 MQTT volume down by the same 5x
+  (which is what makes the "publish everything, no thinning" v1 decision above
+  comfortable rather than merely defensible). Cost: the loss window on an
+  unclean power-down grows with sector fill time, ~32s → ~160s.
+  **The interaction to check when this is picked up:** the ~300s sync ceiling
+  two bullets above must stay several times the sector fill time
+  `(16 / sensor_count) x interval`. At 30s that fill is 160s, so 300s is only
+  1.9x — thin; raise the ceiling to ~900s at the same time. At **60s the fill
+  is 320s and exceeds the 300s ceiling outright**, so the ceiling would fire
+  mid-sector every cycle and reintroduce exactly the write amplification it
+  exists to prevent. 30s is therefore the largest interval that doesn't force
+  re-deciding the ceiling; 60s is fine only if the ceiling moves with it.
 - **Do not thin the SD write path.** Considered and rejected: SD is the system of
   record, so a record not written is gone permanently, and the numbers show
   nothing to gain — 40 days retention against a need for far less, and ~9.5
