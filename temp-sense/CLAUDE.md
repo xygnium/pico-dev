@@ -200,10 +200,18 @@ Geiger-Müller pulses.
   PINGREQ), and `mosquitto_sub -t 'sensors/temp-sense/#'` returns
   `sensors/temp-sense/status online` immediately — which is what proves the
   retain flag took. Only `status` is present, as expected for step 1.
-  **Not yet tested: the Last Will itself.** It needs an ungraceful
-  disconnect plus a ~90s broker keepalive timeout (1.5 x keep_alive) before
-  the broker flips the retained status to `offline`; a reflash mid-connection
-  would do it.
+  **The Last Will is verified under real power loss (2026-08-09.)** DUT power
+  pulled at 13:21:59, retained `offline` published at 13:22:46 — 47s later —
+  and the DUT reconnected and republished retained `online` ~8s after boot.
+  The timing confirms the mechanism, not just the outcome: the broker
+  publishes the will 90s (1.5 x the 60s keep_alive) after the **last packet
+  it received**, and 13:22:46 - 90s = 13:21:16, exactly the DUT's last
+  keepalive PINGREQ. Power was pulled 43s into that ping cycle, so expect
+  `offline` anywhere in a **30-90s window** after a real failure depending on
+  where in the cycle the device dies — not a fixed 90s. Note this is the
+  faithful test: earlier `offline` messages seen during broker restarts came
+  from mosquitto terminating sessions on shutdown, which is a different path
+  and does not exercise keepalive expiry at all.
   **Reconnect is built and hardware-verified (2026-08-09).** lwIP's MQTT
   client never retries on its own, so before this a single drop left the
   firmware silently offline until reboot. `mqtt_temp_poll()` is called once
@@ -562,6 +570,15 @@ none belongs in an unflashed change.
   deliberately. Cheap to satisfy with a `sync` UDP command plus a clean-stop flag
   cleared on first write after boot, which also lets startup report whether the
   previous run ended cleanly.
+  **The loss window has still never been measured**, and a 2026-08-09 power-pull
+  test did *not* measure it despite looking like it might: SD recovery worked
+  (`next seq 136839`, continuing forward with no restart or reuse), but serial
+  capture had stopped ~5 minutes before the cut, so the last *observed* record
+  was not the last *written* one. Extrapolating across ~52 cycles puts the
+  uncertainty at more than a full cycle, which swamps the quantity being
+  measured. To get a real number: capture serial continuously right up to the
+  power cut, then compare the last printed `seq` against `next seq` on the
+  following boot. Worth doing before relying on any specific durability claim.
 - **Operational logging is missing.** Every carefully-surfaced warning — RTC
   implausible, SD unavailable, CRC failures, mount errors, which recovery path
   ran, `format` invoked — goes to `printf` on a UART that nobody is attached to on
