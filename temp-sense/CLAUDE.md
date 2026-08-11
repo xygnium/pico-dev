@@ -14,7 +14,7 @@ Geiger-Müller pulses.
 serial excerpts, specific `seq` numbers — lives in `VERIFICATION.md`, not
 here, so routine sessions aren't paying to load it.*
 
-- **Last updated:** 2026-08-09
+- **Last updated:** 2026-08-11
 - **Done:** Hardware verified on real DS18B20 sensors (3 devices, CRC clean —
   fixed pico-examples Issues #422 and #569 along the way). WiFi/UDP is live
   via the shared `../common/wifi/` library (`picowifi`, extracted from
@@ -130,9 +130,19 @@ here, so routine sessions aren't paying to load it.*
   it, useful for exercising outage/recovery behavior). `mqtt_client.c`/`.h`
   connect after `wifi_connect()` succeeds, register a Last Will on
   `sensors/temp-sense/status` (retained, `offline`) and publish retained
-  `online` on CONNACK. **No sensor data is published yet** — that's steps
-  2/3, so `read`/`sd` remain the only query paths and SD is still the only
-  place readings land.
+  `online` on CONNACK.
+  **Step 2 (publish one retained reading on command) is also done and
+  hardware-verified (2026-08-11).** A `publish` UDP command
+  (`temp-sense.c`) walks the sensor roster, publishes each one's newest
+  RAM-ring record to `sensors/temp-sense/<romcode>/temperature` via
+  `mqtt_temp_publish_record()` (`mqtt_client.c`), retained, QoS 0. Payload
+  is JSON (`{"seq":...,"epoch":...,"c":...}`, not a bare number) because
+  the design already depends on both fields downstream: consumers dedup on
+  `seq` (QoS 1 elsewhere is at-least-once) and detect a seq decrease as a
+  lineage reset after a format/card swap. CRC-error records are skipped
+  rather than published — a bad reading has no value worth retaining on
+  the topic. **Still no watermark or SD replay** — that's step 3, so `read`
+  and `sd` remain the query paths for anything beyond the latest sample.
   This is the last leg of the 3-phase WiFi path: (1) hello-world UDP echo
   [done], (2) useful on-demand query capability [done,
   `read`/`sd`/`settime`/`format` commands], (3) migrate to MQTT [in
@@ -191,6 +201,14 @@ here, so routine sessions aren't paying to load it.*
   Both halves are now reset together — verified by reproducing the exact
   precondition (capped backoff, reconnect, then a second failure inside the
   60s window).
+  **One defect found by step 2's hardware test:** the topic buffer
+  (`char topic[48]` in `mqtt_temp_publish_record()`) was 2 bytes too small
+  for `sensors/temp-sense/0x<16 hex>/temperature` (49 chars + NUL = 50).
+  `snprintf` truncated it safely — no overflow — but the broker silently
+  received `.../temperatu` instead, with nothing in the UDP reply or
+  serial log to indicate it; only visible by checking the broker side
+  directly (`mosquitto_sub`). Sized to 64 and reflashed; re-verified with
+  a clean capture on the correct topic name.
   Priority is to iterate on WiFi here in temp-sense first, then backport the
   shared `common/wifi` usage to gmcount once this is working.
 

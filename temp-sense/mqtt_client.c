@@ -158,3 +158,37 @@ void mqtt_temp_poll(void) {
 bool mqtt_temp_connected(void) {
     return s_connected;
 }
+
+bool mqtt_temp_publish_record(const temp_record_t *rec) {
+    if (!s_connected) {
+        return false;
+    }
+    if (!(rec->flags & TEMP_FLAG_VALID)) {
+        return false;
+    }
+
+    // "sensors/temp-sense/" (19) + "0x" + 16 hex digits (18) +
+    // "/temperature" (12) + NUL = 50; round up for headroom.
+    char topic[64];
+    snprintf(topic, sizeof(topic), "sensors/temp-sense/0x%016llx/temperature",
+             (unsigned long long)rec->romcode);
+
+    char payload[64];
+    int len = snprintf(payload, sizeof(payload),
+                        "{\"seq\":%lu,\"epoch\":%lu,\"c\":%.2f}",
+                        (unsigned long)rec->seq, (unsigned long)rec->epoch,
+                        temp_record_celsius(rec));
+
+    // Main-loop context (not an lwIP callback), so this needs the
+    // threadsafe_background lock — mirrors mqtt_temp_try_connect().
+    cyw43_arch_lwip_begin();
+    err_t err = mqtt_publish(s_client, topic, payload, (u16_t)len, 0, 1,
+                              mqtt_temp_pub_request_cb, NULL);
+    cyw43_arch_lwip_end();
+
+    if (err != ERR_OK) {
+        printf("mqtt: publish to %s failed (err %d)\n", topic, err);
+        return false;
+    }
+    return true;
+}

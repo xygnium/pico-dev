@@ -3,6 +3,8 @@
 
 #include <stdbool.h>
 
+#include "temp_record.h"
+
 // Step 1 of the MQTT staging plan (see temp-sense/CLAUDE.md): connect to the
 // broker with a Last Will on sensors/temp-sense/status (retained, "offline"),
 // and publish "online" (retained) once CONNACK arrives. No sensor data is
@@ -22,5 +24,17 @@ void mqtt_temp_poll(void);
 
 // True once CONNACK has been received for the current connection.
 bool mqtt_temp_connected(void);
+
+// Step 2 of the MQTT staging plan: publish one record to its sensor's
+// retained topic, sensors/temp-sense/<romcode>/temperature. JSON payload
+// carries seq and epoch (not just the value) because the design already
+// depends on both downstream: consumers dedup on seq (QoS 1 elsewhere is
+// at-least-once) and detect a seq decrease as a lineage reset after a
+// format or card swap.
+//
+// QoS 0, retained. Returns false without publishing if not connected, or if
+// the record is flagged CRC-error — a bad reading has no value worth
+// retaining on the topic.
+bool mqtt_temp_publish_record(const temp_record_t *rec);
 
 #endif

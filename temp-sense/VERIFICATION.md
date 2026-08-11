@@ -176,3 +176,23 @@ or reuse. This does **not** measure the actual data-loss window, though —
 see the "no clean shutdown" deferred item in `CLAUDE.md` for why (serial
 capture had stopped ~5 minutes before the actual cut, so the comparison
 point is off by more than the quantity being measured).
+
+## MQTT step 2 (publish on command, 2026-08-11)
+
+`publish` UDP command verified on hardware: replies `0x<romcode>
+published seq <n>` per sensor, and `mosquitto_sub -t
+'sensors/temp-sense/#' -v` confirmed all three retained topics landed
+with the expected JSON payload, e.g.
+`sensors/temp-sense/0x2424010000871c28/temperature
+{"seq":206925,"epoch":1786456048,"c":28.25}`.
+
+**Bug found by this test, not by inspection:** `topic[48]` was 2 bytes
+too small for `sensors/temp-sense/0x<16 hex>/temperature` (49 chars + NUL
+= 50), so the first flash silently truncated every topic to
+`.../temperatu` — `snprintf` truncated safely (no overflow), but the
+broker showed the wrong topic name and nothing in the UDP reply or serial
+log indicated it. Only visible by checking the broker side. Fixed by
+sizing the buffer to 64 and reflashing; re-verified with a clean
+`mosquitto_sub` capture showing the correct topic on a fresh publish, then
+cleared the stale truncated retained messages from the broker by hand
+(`mosquitto_pub -n -r` to each old topic).
