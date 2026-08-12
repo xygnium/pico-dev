@@ -27,8 +27,39 @@
 // Modify these definitions as required, to match connections.
 #define ONEWIRE_GPIO_PIN 15
 
+// Sensor cadence and network responsiveness are deliberately independent
+// timers. Previously wifi_udp_poll() ran once per sensor cycle and the loop
+// then sat in a flat sleep_ms(5000), so a command arriving just after that one
+// poll point waited nearly a full cycle to be answered — measured on hardware
+// as a bimodal 0.6s / 5.9s response depending only on when the packet landed.
+// Sample rate and command latency are unrelated concerns, and coupling them
+// means every future increase to the sample interval (30s is planned — see
+// CLAUDE.md, "Deferred") would degrade responsiveness by the same factor.
+#define TEMP_SAMPLE_INTERVAL_MS 5000  // sensor cadence; the one knob to change
+#define NET_POLL_INTERVAL_MS      50  // bounds worst-case UDP command latency
+#define DS18B20_CONVERT_MS       800  // 12-bit conversion time, per datasheet
+
 int g_temp_num_devs = 0;
 uint64_t g_temp_romcode[TEMP_STORE_MAX_DEVICES];
+
+// Service the network until `deadline`. Used for both the DS18B20 conversion
+// wait and the idle time between samples, so there is no window anywhere in
+// the loop where commands sit unanswered — that is what makes the two timers
+// genuinely independent rather than merely separately named.
+static void net_poll_until(absolute_time_t deadline) {
+    for (;;) {
+        wifi_udp_poll();
+        // Self-timing: mqtt_temp_poll() carries its own backoff deadline, so
+        // calling it on the fast tick makes a due retry fire when it is due
+        // rather than up to a full sensor cycle late. This removes the
+        // "retries quantized to the poll cadence" caveat in CLAUDE.md.
+        mqtt_temp_poll();
+        if (time_reached(deadline)) {
+            return;
+        }
+        sleep_ms(NET_POLL_INTERVAL_MS);
+    }
+}
 
 ds3231_rtc_t g_rtc;
 bool g_rtc_ready = false;
@@ -113,6 +144,12 @@ int example_ds18b20() {
         g_temp_romcode[i] = romcode[i];
     }
 
+    // Anchors the sample schedule. Deadlines are advanced from the previous
+    // deadline rather than from "now", so conversion and read time do not
+    // accumulate into the cadence — the old loop slept 5000ms *after* ~900ms
+    // of work, giving a real period of ~5.9s rather than the nominal 5s.
+    absolute_time_t next_sample = get_absolute_time();
+
     while (num_devs > 0) {
         // start temperature conversion in parallel on all devices
         // (see ds18b20 datasheet)
@@ -120,8 +157,10 @@ int example_ds18b20() {
         ow_send(&ow, OW_SKIP_ROM);
         ow_send(&ow, DS18B20_CONVERT_T);
 
-        // wait for the conversions to finish (max 750ms for 12-bit resolution)
-        sleep_ms(800);
+        // Wait for the conversions to finish (max 750ms for 12-bit
+        // resolution), servicing the network throughout instead of going
+        // deaf for 800ms.
+        net_poll_until(make_timeout_time_ms(DS18B20_CONVERT_MS));
 
         // Timestamp this batch of readings. Stored as an epoch in each
         // record and formatted only here, at the serial-print boundary.
@@ -181,16 +220,24 @@ int example_ds18b20() {
             }
         }
 
-        // Once per sensor cycle, per sd_ring_sync()'s contract. Syncing more
-        // often than a sector fills is a deliberately deferred optimisation
-        // (see CLAUDE.md); this is the simple, correct baseline for step 3.
+        // Once per sensor cycle, per sd_ring_sync()'s contract — tied to the
+        // sample timer, not the network tick. Syncing more often than a sector
+        // fills is a deliberately deferred optimisation (see CLAUDE.md); this
+        // is the simple, correct baseline.
         sd_ring_sync();
 
-        wifi_udp_poll();
-        // lwIP's MQTT client never reconnects itself; this is what turns a
-        // dropped connection into a retry rather than silence until reboot.
-        mqtt_temp_poll();
-        sleep_ms(5000);
+        next_sample = delayed_by_ms(next_sample, TEMP_SAMPLE_INTERVAL_MS);
+        if (time_reached(next_sample)) {
+            // The cycle overran its own interval (a slow SD sync, or a sample
+            // interval set shorter than the conversion time). Resynchronise
+            // rather than firing back-to-back catch-up samples, which would
+            // burst-fill the ring trying to make up time it can never recover.
+            next_sample = make_timeout_time_ms(TEMP_SAMPLE_INTERVAL_MS);
+        }
+
+        // Idle until the next sample is due — still answering commands and
+        // driving MQTT reconnects the whole time.
+        net_poll_until(next_sample);
     }
 
     return 0;
