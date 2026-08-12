@@ -12,7 +12,7 @@
  * not filling the card):
  *
  *   ring.dat   64MiB, preallocated once at first boot, never grows
- *   meta.dat   one sector: sequence high-water and publish watermark
+ *   meta.dat   one sector: sequence high-water and confirmed watermark
  *
  * Records occupy a fixed slot (seq % SD_RING_CAPACITY), so reading a seq back
  * is a seek rather than a scan.
@@ -44,7 +44,7 @@ typedef struct {
     uint32_t magic;
     uint32_t version;
     uint32_t next_seq;   // high-water hint; the boot probe refines it
-    uint32_t published;  // publish watermark (last seq considered)
+    uint32_t confirmed;  // last seq the collector has durably stored (ack'd)
     uint32_t capacity;   // guards against the ring being resized under us
     uint32_t reserved[2];
     uint32_t crc32;      // over bytes [0, 28)
@@ -54,11 +54,11 @@ _Static_assert(sizeof(sd_meta_t) == 32, "sd_meta_t must be 32 bytes");
 
 // Metadata is persisted lazily rather than after every update. That is safe
 // because of two properties that already hold: the boot-time probe below
-// repairs a stale next_seq by reading forward from it, and MQTT consumers
-// already dedup on seq (QoS 1 is at-least-once), so a stale watermark costs at
-// most a few duplicate publishes — which the consumer discards. Writing it
-// eagerly would instead make one sector a far worse wear hotspot than the
-// whole ring, since it would be rewritten after every single batch.
+// repairs a stale next_seq by reading forward from it, and the collector
+// re-fetches and re-acks idempotently, so a stale watermark after an unclean
+// power-down costs at most a few records it already had — harmless. Writing
+// it eagerly would instead make one sector a far worse wear hotspot than the
+// whole ring, since it would be rewritten after every single ack.
 #define META_PERSIST_INTERVAL 256u
 
 // Cluster link map for fast seek. FF_USE_FASTSEEK is enabled, so with this
@@ -77,7 +77,7 @@ static bool  ring_open = false;
 static DWORD clmt[CLMT_ENTRIES];
 
 static uint32_t next_seq      = 0;
-static uint32_t published_seq = 0;
+static uint32_t confirmed_seq = 0;
 static uint32_t puts_since_meta = 0;
 static bool     meta_dirty    = false;
 
@@ -239,7 +239,7 @@ static bool meta_store(void) {
     m.magic     = META_MAGIC;
     m.version   = META_VERSION;
     m.next_seq  = next_seq;
-    m.published = published_seq;
+    m.confirmed = confirmed_seq;
     m.capacity  = SD_RING_CAPACITY;
     m.crc32     = crc32_of(&m, offsetof(sd_meta_t, crc32));
 
@@ -326,7 +326,7 @@ static bool boot_dt_valid = false;
 bool sd_ring_init(const ds3231_datetime_t *boot_dt) {
     g_sd_ready = false;
     next_seq = 0;
-    published_seq = 0;
+    confirmed_seq = 0;
 
     if (boot_dt) {
         boot_dt_copy = *boot_dt;
@@ -402,7 +402,7 @@ bool sd_ring_init(const ds3231_datetime_t *boot_dt) {
                    (m.next_seq == 0 || seq_present(m.next_seq - 1));
 
     if (hint_ok) {
-        published_seq = m.published;
+        confirmed_seq = m.confirmed;
         next_seq = probe_forward(m.next_seq);
     } else {
         if (have_meta) {
@@ -414,18 +414,18 @@ bool sd_ring_init(const ds3231_datetime_t *boot_dt) {
                    META_PATH);
         }
         next_seq = scan_next_seq();
-        // Nothing known to be unpublished, unless the metadata's watermark is
+        // Nothing known to be unconfirmed, unless the metadata's watermark is
         // still coherent with what the scan found.
-        published_seq =
-            (have_meta && m.published <= next_seq) ? m.published : next_seq;
+        confirmed_seq =
+            (have_meta && m.confirmed <= next_seq) ? m.confirmed : next_seq;
     }
 
     g_sd_ready = true;
     printf("sd: ring ready — %lu records (%llu MB), next seq %lu, "
-           "published %lu\n",
+           "confirmed %lu\n",
            (unsigned long)SD_RING_CAPACITY,
            (unsigned long long)(SD_RING_BYTES >> 20),
-           (unsigned long)next_seq, (unsigned long)published_seq);
+           (unsigned long)next_seq, (unsigned long)confirmed_seq);
     meta_store();
     return true;
 }
@@ -490,12 +490,12 @@ uint32_t sd_ring_oldest_seq(void) {
     return next_seq > SD_RING_CAPACITY ? next_seq - SD_RING_CAPACITY : 0;
 }
 
-uint32_t sd_ring_published_seq(void) {
-    return published_seq;
+uint32_t sd_ring_confirmed_seq(void) {
+    return confirmed_seq;
 }
 
-void sd_ring_set_published(uint32_t seq) {
-    published_seq = seq;
+void sd_ring_set_confirmed(uint32_t seq) {
+    confirmed_seq = seq;
     meta_dirty = true;
 }
 
@@ -549,7 +549,7 @@ bool sd_ring_format(void) {
     }
     printf("sd: format complete, re-initialising\n");
 
-    // Deliberately not preserving next_seq/published_seq across the wipe. A
+    // Deliberately not preserving next_seq/confirmed_seq across the wipe. A
     // formatted card has no more prior history than a swapped-in blank one —
     // sd_ring_init() already treats *that* case as a legitimate reset (see
     // the scan_next_seq() comment on a swapped card above) — so format
@@ -572,11 +572,11 @@ void sd_ring_status(char *buf, size_t buf_size) {
     uint32_t stored = next_seq - oldest;
     snprintf(buf, buf_size,
              "sd: ready  capacity %lu  stored %lu  seq %lu..%lu  "
-             "published %lu  backlog %lu\n",
+             "confirmed %lu  backlog %lu\n",
              (unsigned long)SD_RING_CAPACITY,
              (unsigned long)stored,
              (unsigned long)oldest,
              (unsigned long)(next_seq ? next_seq - 1 : 0),
-             (unsigned long)published_seq,
-             (unsigned long)(next_seq - published_seq));
+             (unsigned long)confirmed_seq,
+             (unsigned long)(next_seq - confirmed_seq));
 }

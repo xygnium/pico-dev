@@ -91,10 +91,9 @@ static void handle_format(const char *cmd, char *resp, size_t resp_size) {
 // a designated collector to archive durably. This is the read half of the
 // UDP pull-and-confirm replacement for MQTT push: mosquitto only ever holds
 // the newest retained value per topic and cannot durably ack a delivery, so
-// the collector now confirms receipt itself (see `ack` command, stage 2) and
-// this command never touches the publish watermark — safe to call regardless
-// of collector state. See CLAUDE.md, "Planned: storage & MQTT reporting" for
-// the design.
+// the collector confirms receipt itself via `ack`, below. This command never
+// touches the confirm watermark — safe to call regardless of collector
+// state. See CLAUDE.md, "Planned: storage & MQTT reporting" for the design.
 //
 // A from_seq below oldest is not an error: the reply starts at oldest and
 // the trailer's oldest field tells the collector how much aged out unacked.
@@ -124,7 +123,7 @@ static void handle_fetch(const char *cmd, char *resp, size_t resp_size) {
 
     uint32_t oldest = sd_ring_oldest_seq();
     uint32_t next = sd_ring_next_seq();
-    uint32_t confirmed = sd_ring_published_seq();
+    uint32_t confirmed = sd_ring_confirmed_seq();
 
     uint32_t cur = (from_seq < oldest) ? oldest : from_seq;
     uint32_t first = cur;
@@ -168,6 +167,58 @@ static void handle_fetch(const char *cmd, char *resp, size_t resp_size) {
                      (unsigned long)confirmed);
 }
 
+// `ack <seq>` — the write half of pull-and-confirm: tells the device every
+// record up to and including <seq> is now durably on the collector's own
+// disk, so the ring is free to overwrite it. This is the one command in the
+// protocol that changes device state, so it is deliberately narrow: it can
+// only move the watermark forward, and only up to a seq that has actually
+// been written.
+//
+// The UDP port is LAN-reachable and this has no confirmation token the way
+// `format` does — the clamp below *is* the guard, since a forward jump past
+// unwritten data would skip records permanently, whereas `format`'s mistake
+// (an accidental wipe) is recoverable in the sense that it's at least
+// visible immediately.
+//
+// Idempotent by construction: re-acking the current watermark, or a value
+// already behind it that equals it, is accepted as a no-op success — so a
+// lost ack reply is safe to retry rather than needing its own error path.
+static void handle_ack(const char *cmd, char *resp, size_t resp_size) {
+    if (!sd_ring_available()) {
+        snprintf(resp, resp_size, "ack: sd not available\n");
+        return;
+    }
+
+    unsigned long seq_arg = 0;
+    if (sscanf(cmd, "ack %lu", &seq_arg) != 1) {
+        snprintf(resp, resp_size, "usage: ack <seq>\n");
+        return;
+    }
+    uint32_t seq = (uint32_t)seq_arg;
+
+    uint32_t confirmed = sd_ring_confirmed_seq();
+    uint32_t next = sd_ring_next_seq();
+
+    if (seq < confirmed) {
+        snprintf(resp, resp_size,
+                 "ack: refused — %lu is behind the current watermark %lu "
+                 "(would move backwards)\n",
+                 (unsigned long)seq, (unsigned long)confirmed);
+        return;
+    }
+    // seq >= next covers "never written" (next==0) too: any seq is >= 0.
+    if (seq >= next) {
+        snprintf(resp, resp_size,
+                 "ack: refused — %lu has not been written yet (next seq is "
+                 "%lu)\n",
+                 (unsigned long)seq, (unsigned long)next);
+        return;
+    }
+
+    sd_ring_set_confirmed(seq);
+    snprintf(resp, resp_size, "ack: confirmed %lu\n", (unsigned long)seq);
+}
+
 static void handle_wifi_cmd(const char *cmd, char *resp, size_t resp_size) {
     if (strncmp(cmd, "settime", 7) == 0) {
         handle_settime(cmd, resp, resp_size);
@@ -177,6 +228,8 @@ static void handle_wifi_cmd(const char *cmd, char *resp, size_t resp_size) {
         sd_ring_status(resp, resp_size);
     } else if (strncmp(cmd, "fetch", 5) == 0) {
         handle_fetch(cmd, resp, resp_size);
+    } else if (strncmp(cmd, "ack", 3) == 0) {
+        handle_ack(cmd, resp, resp_size);
     } else if (strcmp(cmd, "publish") == 0) {
         // MQTT step 2: publish the newest reading per sensor to its
         // retained topic, on demand. No watermark/replay yet — that's

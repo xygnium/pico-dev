@@ -17,9 +17,11 @@
  * fixed slot, seq % SD_RING_CAPACITY, so lookup by seq is a direct seek
  * rather than a scan, and space is bounded with no rotation or compaction.
  *
- * Every reading is written here; the MQTT publisher (phase 3, not yet built)
- * reads a range of seqs back off it and advances a watermark. That is what
- * makes a broker or WiFi outage replayable instead of lost.
+ * Every reading is written here; a designated collector pulls a range of
+ * seqs back off it over UDP (`fetch`) and advances the confirm watermark
+ * once it has durably stored them (`ack`) — see the UDP commands in
+ * temp-sense.c. That is what makes a collector or WiFi outage replayable
+ * instead of lost.
  */
 
 // On-SD record. Padded to 32 bytes because SD/FatFs sectors are 512 bytes,
@@ -86,15 +88,18 @@ uint32_t sd_ring_next_seq(void);
 /*! \brief The oldest seq still on the card (older ones have been overwritten). */
 uint32_t sd_ring_oldest_seq(void);
 
-/*! \brief The publish watermark: the last seq *considered* by the publisher.
+/*! \brief The confirm watermark: the last seq the collector has durably
+ *  stored (i.e. ack'd — see the `ack` UDP command in temp-sense.c).
  *
- * Deliberately "considered" rather than "published". They are the same while
- * v1 publishes every record, but they diverge as soon as thinning is added —
- * and reading it as "last published" would make every deliberately-skipped
- * record look like a gap and get re-sent forever.
+ * Unambiguous under pull-and-confirm: a seq <= this is safe to let the ring
+ * overwrite, because the collector already has it on its own disk. (An
+ * earlier MQTT-push design had this mean "last considered" rather than "last
+ * published", to survive publish-side thinning that never got built — that
+ * distinction no longer applies now that the collector, not the device,
+ * decides what's durable.)
  */
-uint32_t sd_ring_published_seq(void);
-void     sd_ring_set_published(uint32_t seq);
+uint32_t sd_ring_confirmed_seq(void);
+void     sd_ring_set_confirmed(uint32_t seq);
 
 /*! \brief Flush pending record writes, and persist metadata if it is due.
  *
