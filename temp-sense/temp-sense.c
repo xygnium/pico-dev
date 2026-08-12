@@ -87,6 +87,87 @@ static void handle_format(const char *cmd, char *resp, size_t resp_size) {
     }
 }
 
+// `fetch <from_seq> [count]` — read-only pull of records off the SD ring for
+// a designated collector to archive durably. This is the read half of the
+// UDP pull-and-confirm replacement for MQTT push: mosquitto only ever holds
+// the newest retained value per topic and cannot durably ack a delivery, so
+// the collector now confirms receipt itself (see `ack` command, stage 2) and
+// this command never touches the publish watermark — safe to call regardless
+// of collector state. See CLAUDE.md, "Planned: storage & MQTT reporting" for
+// the design.
+//
+// A from_seq below oldest is not an error: the reply starts at oldest and
+// the trailer's oldest field tells the collector how much aged out unacked.
+// Records stop short of resp_size — a budget is reserved for the trailer
+// before each line is added — so a reply is truncated at a record boundary,
+// never mid-line. That precaution is not hypothetical: the MQTT topic-buffer
+// bug (see CLAUDE.md) showed a silently truncated snprintf is invisible from
+// the device's own log, only visible from the far end.
+#define FETCH_LINE_MAX    64  // "<seq> <epoch> 0x<16 hex> <raw> <flags>\n" is ~52; rounded up
+#define FETCH_TRAILER_MAX 64  // "end <first> <last> <oldest> <next> <confirmed>\n" is ~59
+
+static void handle_fetch(const char *cmd, char *resp, size_t resp_size) {
+    if (!sd_ring_available()) {
+        snprintf(resp, resp_size, "fetch: sd not available\n");
+        return;
+    }
+
+    unsigned long from_arg = 0, count_arg = 0;
+    int n = sscanf(cmd, "fetch %lu %lu", &from_arg, &count_arg);
+    if (n < 1) {
+        snprintf(resp, resp_size, "usage: fetch <from_seq> [count]\n");
+        return;
+    }
+    bool have_limit = (n == 2);
+    uint32_t from_seq = (uint32_t)from_arg;
+    uint32_t limit = (uint32_t)count_arg;
+
+    uint32_t oldest = sd_ring_oldest_seq();
+    uint32_t next = sd_ring_next_seq();
+    uint32_t confirmed = sd_ring_published_seq();
+
+    uint32_t cur = (from_seq < oldest) ? oldest : from_seq;
+    uint32_t first = cur;
+    uint32_t last = first;  // stays == first if nothing gets emitted below
+    uint32_t emitted = 0;
+
+    size_t off = 0;
+    while (cur < next) {
+        if (have_limit && emitted >= limit) {
+            break;
+        }
+        // Reserve room for the trailer before committing to another record
+        // line, so running out of space ends the batch cleanly instead of
+        // mid-record.
+        if (off + FETCH_LINE_MAX + FETCH_TRAILER_MAX > resp_size) {
+            break;
+        }
+        temp_record_t rec;
+        if (sd_ring_get(cur, &rec)) {
+            // CRC-error records are emitted too, same as `read` — the flags
+            // field carries the error, so a flagged record is a visible gap
+            // rather than a vanished one.
+            off += snprintf(resp + off, resp_size - off,
+                            "%lu %lu 0x%016llx %d %u\n",
+                            (unsigned long)rec.seq, (unsigned long)rec.epoch,
+                            (unsigned long long)rec.romcode, rec.raw,
+                            rec.flags);
+            last = cur;
+            emitted++;
+        }
+        // A slot that fails sd_ring_get() (stale/corrupt on-SD CRC) is
+        // skipped rather than aborting the batch — the seq is still
+        // considered serviced so the collector doesn't get stuck re-asking
+        // for a slot that will never validate.
+        cur++;
+    }
+
+    off += snprintf(resp + off, resp_size - off, "end %lu %lu %lu %lu %lu\n",
+                     (unsigned long)first, (unsigned long)last,
+                     (unsigned long)oldest, (unsigned long)next,
+                     (unsigned long)confirmed);
+}
+
 static void handle_wifi_cmd(const char *cmd, char *resp, size_t resp_size) {
     if (strncmp(cmd, "settime", 7) == 0) {
         handle_settime(cmd, resp, resp_size);
@@ -94,6 +175,8 @@ static void handle_wifi_cmd(const char *cmd, char *resp, size_t resp_size) {
         handle_format(cmd, resp, resp_size);
     } else if (strcmp(cmd, "sd") == 0) {
         sd_ring_status(resp, resp_size);
+    } else if (strncmp(cmd, "fetch", 5) == 0) {
+        handle_fetch(cmd, resp, resp_size);
     } else if (strcmp(cmd, "publish") == 0) {
         // MQTT step 2: publish the newest reading per sensor to its
         // retained topic, on demand. No watermark/replay yet — that's
