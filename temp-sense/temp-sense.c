@@ -7,6 +7,7 @@
 #include "temp_record.h"
 #include "temp_store.h"
 #include "sd_ring.h"
+#include "config_store.h"
 
 extern int example_ds18b20();
 
@@ -240,6 +241,37 @@ static void handle_sensors(char *resp, size_t resp_size) {
     }
 }
 
+// `config get` / `config set <max_retries> <retry_interval_ms>` — the
+// v1.2 protocol's receiver-side retry policy. The device only stores this;
+// it never times anything out itself (see xfer_proto.h). A receiver reads
+// it once at session start and drives its own retry loop.
+static void handle_config(const char *cmd, char *resp, size_t resp_size) {
+    unsigned long retries_arg = 0, interval_arg = 0;
+    int n = sscanf(cmd, "config set %lu %lu", &retries_arg, &interval_arg);
+    if (n == 2) {
+        if (config_store_set((uint32_t)retries_arg, (uint32_t)interval_arg)) {
+            snprintf(resp, resp_size, "config: set max_retries=%lu "
+                     "retry_interval_ms=%lu\n", retries_arg, interval_arg);
+        } else {
+            snprintf(resp, resp_size,
+                     "config: refused — max_retries must be %u..%u, "
+                     "retry_interval_ms must be %u..%u (or sd unavailable)\n",
+                     CONFIG_MIN_MAX_RETRIES, CONFIG_MAX_MAX_RETRIES,
+                     CONFIG_MIN_RETRY_INTERVAL_MS, CONFIG_MAX_RETRY_INTERVAL_MS);
+        }
+        return;
+    }
+    if (strcmp(cmd, "config get") == 0) {
+        snprintf(resp, resp_size,
+                 "config: max_retries=%lu retry_interval_ms=%lu\n",
+                 (unsigned long)config_store_max_retries(),
+                 (unsigned long)config_store_retry_interval_ms());
+        return;
+    }
+    snprintf(resp, resp_size,
+             "usage: config get | config set <max_retries> <retry_interval_ms>\n");
+}
+
 // All commands today are plain ASCII in and out, so this just forwards to
 // the existing string-based handlers and measures the reply with strlen()
 // at the end. `cmd_len` is unused for now — it exists so a future binary
@@ -260,6 +292,8 @@ static void handle_wifi_cmd(const char *cmd, size_t cmd_len, char *resp,
         handle_ack(cmd, resp, resp_size);
     } else if (strcmp(cmd, "sensors") == 0) {
         handle_sensors(resp, resp_size);
+    } else if (strncmp(cmd, "config", 6) == 0) {
+        handle_config(cmd, resp, resp_size);
     } else if (strcmp(cmd, "read") == 0) {
         if (temp_ring_next_seq() == 0) {
             snprintf(resp, resp_size, "no readings yet\n");
@@ -325,6 +359,11 @@ int main() {
     // slots the SD ring already considers occupied.
     if (sd_ok) {
         temp_ring_set_next_seq(sd_ring_next_seq());
+        // Needs the filesystem sd_ring_init() just mounted; not otherwise
+        // related to the ring itself. Missing/invalid config.dat is not an
+        // error — config_store_init() seeds in-memory defaults and leaves
+        // the file untouched until an explicit `config set`.
+        config_store_init();
     }
 
     int wifi_err = wifi_connect(WIFI_COUNTRY, WIFI_SSID, WIFI_PASS, WIFI_AUTH);

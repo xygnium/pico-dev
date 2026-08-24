@@ -20,6 +20,8 @@ add_executable(temp-sense
     hw_config.c
     api_ds3231.c
     crc32.c
+    xfer_proto.c
+    config_store.c
 )
 
 target_include_directories(temp-sense PRIVATE ${CMAKE_CURRENT_LIST_DIR})
