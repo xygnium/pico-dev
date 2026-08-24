@@ -22,7 +22,6 @@
 #include "temp_record.h"
 #include "temp_store.h"
 #include "sd_ring.h"
-#include "mqtt_client.h"
 
 // Modify these definitions as required, to match connections.
 #define ONEWIRE_GPIO_PIN 15
@@ -49,11 +48,6 @@ uint64_t g_temp_romcode[TEMP_STORE_MAX_DEVICES];
 static void net_poll_until(absolute_time_t deadline) {
     for (;;) {
         wifi_udp_poll();
-        // Self-timing: mqtt_temp_poll() carries its own backoff deadline, so
-        // calling it on the fast tick makes a due retry fire when it is due
-        // rather than up to a full sensor cycle late. This removes the
-        // "retries quantized to the poll cadence" caveat in CLAUDE.md.
-        mqtt_temp_poll();
         if (time_reached(deadline)) {
             return;
         }

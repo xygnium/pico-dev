@@ -7,7 +7,6 @@
 #include "temp_record.h"
 #include "temp_store.h"
 #include "sd_ring.h"
-#include "mqtt_client.h"
 
 extern int example_ds18b20();
 
@@ -237,36 +236,6 @@ static void handle_wifi_cmd(const char *cmd, size_t cmd_len, char *resp,
         handle_fetch(cmd, resp, resp_size);
     } else if (strncmp(cmd, "ack", 3) == 0) {
         handle_ack(cmd, resp, resp_size);
-    } else if (strcmp(cmd, "publish") == 0) {
-        // MQTT step 2: publish the newest reading per sensor to its
-        // retained topic, on demand. No watermark/replay yet — that's
-        // step 3.
-        if (!mqtt_temp_connected()) {
-            snprintf(resp, resp_size, "mqtt: not connected\n");
-            *resp_len = strlen(resp);
-            return;
-        }
-        size_t off = 0;
-        for (int i = 0; i < g_temp_num_devs && off < resp_size; i++) {
-            temp_record_t rec;
-            if (!temp_ring_latest_for_rom(g_temp_romcode[i], &rec)) {
-                off += snprintf(resp + off, resp_size - off,
-                                "0x%016llx  no reading yet\n",
-                                g_temp_romcode[i]);
-                continue;
-            }
-            if (mqtt_temp_publish_record(&rec)) {
-                off += snprintf(resp + off, resp_size - off,
-                                "0x%016llx  published seq %lu\n",
-                                rec.romcode, (unsigned long)rec.seq);
-            } else {
-                off += snprintf(resp + off, resp_size - off,
-                                "0x%016llx  skipped (%s)\n", rec.romcode,
-                                (rec.flags & TEMP_FLAG_VALID)
-                                    ? "publish failed"
-                                    : "CRC error");
-            }
-        }
     } else if (strcmp(cmd, "read") == 0) {
         if (temp_ring_next_seq() == 0) {
             snprintf(resp, resp_size, "no readings yet\n");
@@ -337,10 +306,6 @@ int main() {
     int wifi_err = wifi_connect(WIFI_COUNTRY, WIFI_SSID, WIFI_PASS, WIFI_AUTH);
     if (wifi_err) {
         printf("wifi: connect failed (err %d)\n", wifi_err);
-    } else {
-        // MQTT step 1: connect + Last Will only (see temp-sense/CLAUDE.md).
-        // No sensor data published yet.
-        mqtt_temp_init();
     }
     wifi_udp_start(8080, handle_wifi_cmd);
 
