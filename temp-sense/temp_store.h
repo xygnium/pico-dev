@@ -6,7 +6,7 @@
 
 #include "api_ds3231.h"
 
-#define TEMP_STORE_MAX_DEVICES 10
+#define TEMP_STORE_MAX_DEVICES 20
 
 // The sensors found by the 1-Wire bus scan, in enumeration order. This is the
 // *roster* only — readings themselves live in the ring buffer (temp_record.h)

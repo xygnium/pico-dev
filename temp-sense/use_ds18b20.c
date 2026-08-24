@@ -130,7 +130,7 @@ int example_ds18b20() {
     }
 
     // find and display 64-bit device addresses
-    const int maxdevs = 10;
+    const int maxdevs = 20;
     uint64_t romcode[maxdevs];
     int num_devs = ow_romsearch(&ow, romcode, maxdevs, OW_SEARCH_ROM);
 
