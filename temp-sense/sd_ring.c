@@ -32,6 +32,7 @@
 
 #include "sd_ring.h"
 #include "temp_store.h"
+#include "crc32.h"
 
 #define RING_PATH "ring.dat"
 #define META_PATH "meta.dat"
@@ -80,22 +81,6 @@ static uint32_t next_seq      = 0;
 static uint32_t confirmed_seq = 0;
 static uint32_t puts_since_meta = 0;
 static bool     meta_dirty    = false;
-
-/* ------------------------------------------------------------------ CRC32 */
-
-// Bitwise CRC-32 (reflected, poly 0xEDB88320). Table-free: 28 bytes per
-// record at 3 records / 5s is nothing, and it saves a 1KB table.
-static uint32_t crc32_of(const void *data, size_t len) {
-    const uint8_t *p = (const uint8_t *)data;
-    uint32_t crc = 0xFFFFFFFFu;
-    for (size_t i = 0; i < len; i++) {
-        crc ^= p[i];
-        for (int b = 0; b < 8; b++) {
-            crc = (crc >> 1) ^ (0xEDB88320u & (uint32_t)(-(int32_t)(crc & 1)));
-        }
-    }
-    return ~crc;
-}
 
 /* ------------------------------------------------------------- slot access */
 
