@@ -225,6 +225,21 @@ static void handle_ack(const char *cmd, char *resp, size_t resp_size) {
     snprintf(resp, resp_size, "ack: confirmed %lu\n", (unsigned long)seq);
 }
 
+// `sensors` — the roster in enumeration order, which *is* the wire
+// sensor_id the v1.2 UDP protocol's DATA packets use as a 1-byte index
+// instead of the full 8-byte ROM code. The roster is fixed at boot (see
+// temp_store.h), so a receiver only needs to fetch this once per session,
+// before its first REQUEST, to build its id<->romcode table.
+static void handle_sensors(char *resp, size_t resp_size) {
+    size_t off = 0;
+    off += snprintf(resp + off, resp_size - off, "sensors: %d\n",
+                     g_temp_num_devs);
+    for (int i = 0; i < g_temp_num_devs && off < resp_size; i++) {
+        off += snprintf(resp + off, resp_size - off, "%d 0x%016llx\n", i,
+                         (unsigned long long)g_temp_romcode[i]);
+    }
+}
+
 // All commands today are plain ASCII in and out, so this just forwards to
 // the existing string-based handlers and measures the reply with strlen()
 // at the end. `cmd_len` is unused for now — it exists so a future binary
@@ -243,6 +258,8 @@ static void handle_wifi_cmd(const char *cmd, size_t cmd_len, char *resp,
         handle_fetch(cmd, resp, resp_size);
     } else if (strncmp(cmd, "ack", 3) == 0) {
         handle_ack(cmd, resp, resp_size);
+    } else if (strcmp(cmd, "sensors") == 0) {
+        handle_sensors(resp, resp_size);
     } else if (strcmp(cmd, "read") == 0) {
         if (temp_ring_next_seq() == 0) {
             snprintf(resp, resp_size, "no readings yet\n");
