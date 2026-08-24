@@ -219,7 +219,14 @@ static void handle_ack(const char *cmd, char *resp, size_t resp_size) {
     snprintf(resp, resp_size, "ack: confirmed %lu\n", (unsigned long)seq);
 }
 
-static void handle_wifi_cmd(const char *cmd, char *resp, size_t resp_size) {
+// All commands today are plain ASCII in and out, so this just forwards to
+// the existing string-based handlers and measures the reply with strlen()
+// at the end. `cmd_len` is unused for now — it exists so a future binary
+// command (checked by magic byte, before this ASCII chain) can dispatch
+// without relying on NUL-termination.
+static void handle_wifi_cmd(const char *cmd, size_t cmd_len, char *resp,
+                             size_t resp_size, size_t *resp_len) {
+    (void)cmd_len;
     if (strncmp(cmd, "settime", 7) == 0) {
         handle_settime(cmd, resp, resp_size);
     } else if (strncmp(cmd, "format", 6) == 0) {
@@ -236,6 +243,7 @@ static void handle_wifi_cmd(const char *cmd, char *resp, size_t resp_size) {
         // step 3.
         if (!mqtt_temp_connected()) {
             snprintf(resp, resp_size, "mqtt: not connected\n");
+            *resp_len = strlen(resp);
             return;
         }
         size_t off = 0;
@@ -262,6 +270,7 @@ static void handle_wifi_cmd(const char *cmd, char *resp, size_t resp_size) {
     } else if (strcmp(cmd, "read") == 0) {
         if (temp_ring_next_seq() == 0) {
             snprintf(resp, resp_size, "no readings yet\n");
+            *resp_len = strlen(resp);
             return;
         }
         // One line per sensor, keyed by ROM code and carrying its own
@@ -297,6 +306,7 @@ static void handle_wifi_cmd(const char *cmd, char *resp, size_t resp_size) {
     } else {
         snprintf(resp, resp_size, "temp-sense ack: %s", cmd);
     }
+    *resp_len = strlen(resp);
 }
 
 int main() {

@@ -16,6 +16,7 @@ static volatile int s_cmd_pending;
 static ip_addr_t s_recv_addr;
 static u16_t s_recv_port;
 static char s_cmd_buf[WIFI_UDP_BUF_SIZE];
+static size_t s_cmd_len;
 
 #define WIFI_CONNECT_MAX_ATTEMPTS 5
 #define WIFI_CONNECT_RETRY_DELAY_MS 1000
@@ -58,7 +59,8 @@ static void wifi_udp_recv_cb(void *arg, struct udp_pcb *pcb, struct pbuf *p,
     s_recv_port = port;
     size_t len = p->tot_len < sizeof(s_cmd_buf) - 1 ? p->tot_len : sizeof(s_cmd_buf) - 1;
     pbuf_copy_partial(p, s_cmd_buf, len, 0);
-    s_cmd_buf[len] = 0;
+    s_cmd_buf[len] = 0;  // guarantees cmd[cmd_len] is NUL for ASCII handlers
+    s_cmd_len = len;
     pbuf_free(p);
     s_cmd_pending = 1;
 }
@@ -78,12 +80,13 @@ void wifi_udp_poll(void)
     }
     char resp[WIFI_UDP_BUF_SIZE];
     resp[0] = 0;
+    size_t resp_len = 0;
     if (s_handler) {
-        s_handler(s_cmd_buf, resp, sizeof(resp));
+        s_handler(s_cmd_buf, s_cmd_len, resp, sizeof(resp), &resp_len);
     }
-    struct pbuf *q = pbuf_alloc(PBUF_TRANSPORT, strlen(resp) + 1, PBUF_RAM);
+    struct pbuf *q = pbuf_alloc(PBUF_TRANSPORT, resp_len, PBUF_RAM);
     if (q) {
-        memcpy(q->payload, resp, strlen(resp) + 1);
+        memcpy(q->payload, resp, resp_len);
         udp_sendto(s_pcb, q, &s_recv_addr, s_recv_port);
         pbuf_free(q);
     }
