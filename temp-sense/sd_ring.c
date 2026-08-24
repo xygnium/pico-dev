@@ -47,7 +47,13 @@ typedef struct {
     uint32_t next_seq;   // high-water hint; the boot probe refines it
     uint32_t confirmed;  // last seq the collector has durably stored (ack'd)
     uint32_t capacity;   // guards against the ring being resized under us
-    uint32_t reserved[2];
+    // The wire watermark for the v1.2 UDP protocol is a timestamp, not a
+    // seq — dual-tracked alongside `confirmed` rather than replacing it,
+    // since `confirmed`/seq is still what makes steady-state resume O(1).
+    // 0 means "unknown" (old meta.dat predating this field, or a recovery
+    // path that couldn't determine it) — see sd_ring_find_seq_after_epoch().
+    uint32_t confirmed_epoch;
+    uint32_t reserved[1];
     uint32_t crc32;      // over bytes [0, 28)
 } sd_meta_t;
 
@@ -77,10 +83,11 @@ static bool  mounted   = false;
 static bool  ring_open = false;
 static DWORD clmt[CLMT_ENTRIES];
 
-static uint32_t next_seq      = 0;
-static uint32_t confirmed_seq = 0;
+static uint32_t next_seq        = 0;
+static uint32_t confirmed_seq   = 0;
+static uint32_t confirmed_epoch = 0;
 static uint32_t puts_since_meta = 0;
-static bool     meta_dirty    = false;
+static bool     meta_dirty      = false;
 
 /* ------------------------------------------------------------- slot access */
 
@@ -226,6 +233,7 @@ static bool meta_store(void) {
     m.next_seq  = next_seq;
     m.confirmed = confirmed_seq;
     m.capacity  = SD_RING_CAPACITY;
+    m.confirmed_epoch = confirmed_epoch;
     m.crc32     = crc32_of(&m, offsetof(sd_meta_t, crc32));
 
     FIL f;
@@ -388,6 +396,7 @@ bool sd_ring_init(const ds3231_datetime_t *boot_dt) {
 
     if (hint_ok) {
         confirmed_seq = m.confirmed;
+        confirmed_epoch = m.confirmed_epoch;
         next_seq = probe_forward(m.next_seq);
     } else {
         if (have_meta) {
@@ -400,9 +409,12 @@ bool sd_ring_init(const ds3231_datetime_t *boot_dt) {
         }
         next_seq = scan_next_seq();
         // Nothing known to be unconfirmed, unless the metadata's watermark is
-        // still coherent with what the scan found.
-        confirmed_seq =
-            (have_meta && m.confirmed <= next_seq) ? m.confirmed : next_seq;
+        // still coherent with what the scan found. Same reasoning applies to
+        // the epoch half — 0 ("unknown") if the seq half isn't trustworthy
+        // either, since the two must move together.
+        bool meta_coherent = have_meta && m.confirmed <= next_seq;
+        confirmed_seq = meta_coherent ? m.confirmed : next_seq;
+        confirmed_epoch = meta_coherent ? m.confirmed_epoch : 0;
     }
 
     g_sd_ready = true;
@@ -479,9 +491,61 @@ uint32_t sd_ring_confirmed_seq(void) {
     return confirmed_seq;
 }
 
-void sd_ring_set_confirmed(uint32_t seq) {
+uint32_t sd_ring_confirmed_epoch(void) {
+    return confirmed_epoch;
+}
+
+void sd_ring_set_confirmed(uint32_t seq, uint32_t epoch) {
     confirmed_seq = seq;
+    confirmed_epoch = epoch;
     meta_dirty = true;
+}
+
+// Smallest seq in [oldest, next) whose epoch is strictly greater than
+// `after_epoch`, or sd_ring_next_seq() if the receiver is already fully
+// caught up. This is the recovery path for a REQUEST whose watermark is
+// behind the device's own confirmed_epoch (a new or restored receiver) —
+// the steady-state case (watermark == confirmed_epoch) resumes cheaply from
+// confirmed_seq + 1 instead, without calling this.
+//
+// Assumes epoch is monotonic non-decreasing with seq, which holds in the
+// normal case (each sensor cycle's epoch is >= the previous one's). That can
+// be violated — an operator running `settime` backward mid-log — so the
+// boundary is sanity-checked before trusting bisection; a linear scan is the
+// safe fallback rather than letting a bad assumption silently return the
+// wrong point.
+uint32_t sd_ring_find_seq_after_epoch(uint32_t after_epoch) {
+    uint32_t oldest = sd_ring_oldest_seq();
+    uint32_t hi_bound = next_seq;
+    if (oldest >= hi_bound) return hi_bound;
+
+    temp_record_t lo_rec, hi_rec;
+    bool have_lo = sd_ring_get(oldest, &lo_rec);
+    bool have_hi = sd_ring_get(hi_bound - 1, &hi_rec);
+
+    if (!have_lo || !have_hi || lo_rec.epoch > hi_rec.epoch) {
+        for (uint32_t s = oldest; s < hi_bound; s++) {
+            temp_record_t rec;
+            if (sd_ring_get(s, &rec) && rec.epoch > after_epoch) return s;
+        }
+        return hi_bound;
+    }
+
+    // Lower-bound binary search: find the first seq whose epoch exceeds
+    // after_epoch. A slot that fails to read (stale/corrupt CRC) is treated
+    // like "epoch <= after_epoch" — its value can't be trusted either way,
+    // and the next real record downstream is still found.
+    uint32_t lo = oldest, hi = hi_bound;
+    while (lo < hi) {
+        uint32_t mid = lo + (hi - lo) / 2;
+        temp_record_t rec;
+        if (sd_ring_get(mid, &rec) && rec.epoch > after_epoch) {
+            hi = mid;
+        } else {
+            lo = mid + 1;
+        }
+    }
+    return lo;
 }
 
 void sd_ring_sync(void) {
