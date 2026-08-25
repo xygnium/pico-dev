@@ -100,29 +100,15 @@ uint32_t sd_ring_oldest_seq(void);
  */
 uint32_t sd_ring_confirmed_seq(void);
 
-/*! \brief The wire watermark for the v1.2 UDP protocol: the epoch of the
- *  newest record in the last fully-ACK'd transfer. Dual-tracked alongside
- *  sd_ring_confirmed_seq() rather than replacing it — the seq half is still
- *  what makes steady-state resume O(1); this half is what a REQUEST's
- *  watermark is compared against. 0 means unknown (see sd_ring.c).
+/*! \brief Set the confirm watermark to `seq`. Used by both the legacy `ack`
+ *  command and the v1.2 REQUEST/ACK/NACK state machine (xfer_session.c).
  */
-uint32_t sd_ring_confirmed_epoch(void);
+void sd_ring_set_confirmed(uint32_t seq);
 
-void     sd_ring_set_confirmed(uint32_t seq, uint32_t epoch);
-
-/*! \brief Recovery path for a REQUEST whose watermark is behind this
- *  device's own sd_ring_confirmed_epoch() (a new or restored receiver).
+/*! \brief Flush pending record writes, and persist ring state if it is due.
  *
- * \return the smallest seq in [oldest, next) whose epoch is strictly
- *         greater than after_epoch, or sd_ring_next_seq() if nothing is
- *         newer (the receiver is already fully caught up).
- */
-uint32_t sd_ring_find_seq_after_epoch(uint32_t after_epoch);
-
-/*! \brief Flush pending record writes, and persist metadata if it is due.
- *
- * Call once per sensor cycle. Metadata is written lazily rather than on every
- * update — see sd_ring.c for why that is safe.
+ * Call once per sensor cycle. Ring state is written lazily rather than on
+ * every update — see sd_ring.c for why that is safe.
  */
 void sd_ring_sync(void);
 

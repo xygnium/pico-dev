@@ -60,15 +60,6 @@ bool xfer_unpack_msg_header(const uint8_t *in, size_t len, uint8_t *msg_type) {
     return true;
 }
 
-/* --------------------------------------------------------------- REQUEST */
-
-bool xfer_unpack_request_payload(const uint8_t *in, size_t len,
-                                  uint32_t *watermark_epoch) {
-    if (len < XFER_REQUEST_PAYLOAD_LEN) return false;
-    *watermark_epoch = get_u32le(in);
-    return true;
-}
-
 /* ------------------------------------------------------------------- ACK */
 
 bool xfer_unpack_ack_payload(const uint8_t *in, size_t len,

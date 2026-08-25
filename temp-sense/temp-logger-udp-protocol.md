@@ -1,6 +1,7 @@
 # Temp-Logger UDP Download Protocol (v1.2)
 
 ## Design assumptions carried over from discussion
+- There is exactly one collector (receiver) for this device, always. The protocol does not need to support multiple, replaceable, or amnesiac receivers — the logger trusts its own bookkeeping rather than anything a REQUEST might assert about the receiver's position.
 - Each reading is self-identifying: `(sensor_id, timestamp)` is unique and never collides, because the RTC is battery-backed and time inconsistencies are validated/handled downstream.
 - Because readings are self-identifying, the receiver does **not** need in-order delivery or explicit dedup logic beyond keying its store by `(sensor_id, timestamp)`. Sequence numbers exist purely to track *completeness*, not ordering.
 - A failed/incomplete transfer is safe to simply retry wholesale next cycle — resent data that already exists at the receiver is a no-op.
@@ -8,7 +9,7 @@
 ## Terms
 - `N_sensors`: 3–20, count of active sensors.
 - `set`: one reading round — one timestamp + one temperature value per active sensor.
-- `X`: total sets pending since the receiver's last acknowledged watermark.
+- `X`: total sets pending since the logger's own last confirmed watermark.
 - `SPP` (sets per packet): computed at runtime from `N_sensors` so the packet stays under the safe UDP payload (see Sizing below).
 - `TP` (total packets): `ceil(X / SPP)` for a given transfer.
 - `transfer_id`: 32-bit ID chosen by the logger when it begins responding to a REQUEST. Distinguishes this transfer's packets from a prior/retried one.
@@ -17,7 +18,7 @@
 
 | Type | Direction | Purpose |
 |---|---|---|
-| `REQUEST` | receiver → logger | "Send me everything since my last watermark." Includes receiver's last-known watermark timestamp (redundant confirmation — logger is authoritative). |
+| `REQUEST` | receiver → logger | "Send me everything since your last confirmed watermark." No payload — the logger always resumes from its own bookkeeping (there is exactly one collector, always). |
 | `DATA` | logger → receiver | One packet of up to `SPP` sets. |
 | `ACK` / `NACK` | receiver → logger | Sent after each window. `ACK` reports the window (or full transfer) complete — on final-window `ACK`, logger may advance its watermark. `NACK` lists missing `seq` numbers in the current window, requesting retransmission. A `NACK` sent after the receiver's retry budget is exhausted signals transfer abandonment — logger does **not** advance its watermark, so this data is naturally re-offered next cycle. |
 
@@ -62,7 +63,7 @@ Since `N_sensors` varies 3–20, compute `SPP` fresh per transfer rather than fi
 4. Receiver sends `ACK` (packet received correctly) or `NACK` (packet missing or failed CRC, requesting retransmission) for each `DATA` packet.
 5. On `NACK`, logger retransmits the same packet (same `seq` + `transfer_id`).
 6. Repeat until all `TP` packets are `ACK`'d or `max_retries` is hit for a given packet. `max_retries` and the per-packet retry interval are configurable values, provided through a UDP-based configuration interface rather than hardcoded (defaults: `max_retries = 5`, retry interval = 5s).
-7. Once all `TP` packets are `ACK`'d, the transfer is complete and the logger advances its watermark to the newest timestamp in this transfer.
+7. Once all `TP` packets are `ACK`'d, the transfer is complete and the logger advances its watermark to the last seq in this transfer.
    If retry budget is exhausted on any packet, receiver sends a final `NACK` and abandons the transfer_id → logger leaves its watermark unchanged; the same data (plus whatever accumulated since) is offered again next `REQUEST`, deduped for free at the receiver by `(sensor_id, timestamp)`.
 
 ## What this closes from the original gap list

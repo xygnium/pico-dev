@@ -7,8 +7,8 @@
 /*
  * Operator-set policy for the v1.2 UDP protocol's receiver-side retry loop,
  * persisted in config.dat (same magic/version/CRC32 pattern as sd_ring.c's
- * meta.dat, but its own file — ring-watermark bookkeeping and this are
- * unrelated concerns). The device only stores these; it never times
+ * ring_state.dat, but its own file — ring-watermark bookkeeping and this
+ * are unrelated concerns). The device only stores these; it never times
  * anything out itself (the logger stays stateless-per-poll, answering
  * whatever it last received — see the migration plan). A receiver reads
  * them via `config get` at session start and drives its own retry loop.
@@ -41,7 +41,7 @@ uint32_t config_store_retry_interval_ms(void);
 /*! \brief Validate against the CONFIG_MIN/MAX_* bounds, and if valid,
  *  update the in-memory values and persist immediately (config changes are
  *  a rare operator action, not a per-sample write, so there is no wear
- *  concern the way there is for meta.dat's lazy persistence).
+ *  concern the way there is for ring_state.dat's lazy persistence).
  *
  * \return true on success; false if either value is out of bounds (nothing
  *         is changed) or the write failed.

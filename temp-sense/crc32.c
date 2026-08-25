@@ -1,8 +1,8 @@
 #include "crc32.h"
 
-// Table-free: the data volumes here (SD records/meta, single UDP packets)
-// are small enough that the per-byte bit loop is nothing, and it saves a
-// 1KB table.
+// Table-free: the data volumes here (SD records/ring state, single UDP
+// packets) are small enough that the per-byte bit loop is nothing, and it
+// saves a 1KB table.
 uint32_t crc32_of(const void *data, size_t len) {
     const uint8_t *p = (const uint8_t *)data;
     uint32_t crc = 0xFFFFFFFFu;

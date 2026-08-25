@@ -50,21 +50,15 @@ static uint32_t next_transfer_id(void) {
     return ++s_id;
 }
 
-static void start_transfer(uint32_t watermark_epoch) {
-    uint32_t confirmed_epoch = sd_ring_confirmed_epoch();
-    uint32_t start_seq;
-    if (watermark_epoch == confirmed_epoch) {
-        // Steady state: resume cheaply right after the last confirmed
-        // record instead of scanning for it.
-        start_seq = sd_ring_confirmed_seq() + 1;
-    } else {
-        // Recovery: a new/restored receiver whose watermark trails (or
-        // otherwise disagrees with) this device's own confirmed_epoch.
-        start_seq = sd_ring_find_seq_after_epoch(watermark_epoch);
-    }
-
+// There is exactly one collector for this device, always -- no need to let
+// a REQUEST assert its own position. Always resume right after the last
+// fully-ACK'd transfer.
+static void start_transfer(void) {
+    uint32_t oldest = sd_ring_oldest_seq();
     uint32_t next = sd_ring_next_seq();
-    if (start_seq > next) start_seq = next;  // defensive; shouldn't happen
+    uint32_t start_seq = sd_ring_confirmed_seq() + 1;
+    if (start_seq < oldest) start_seq = oldest;  // defensive; shouldn't happen
+    if (start_seq > next) start_seq = next;      // defensive; shouldn't happen
 
     int n_sensors = g_temp_num_devs;
     if (n_sensors <= 0) n_sensors = 1;  // guards the division below; with no
@@ -137,17 +131,17 @@ static void build_data_packet(uint16_t seq, char *resp, size_t resp_size,
     *resp_len = XFER_DATA_HEADER_LEN + payload_len;
 }
 
+// REQUEST carries no payload (see xfer_proto.h) -- payload/len are unused,
+// kept only so this matches handle_ack()/handle_nack()'s call signature for
+// xfer_session_handle()'s dispatch.
 static void handle_request(const uint8_t *payload, size_t len, char *resp,
                             size_t resp_size, size_t *resp_len) {
-    uint32_t watermark_epoch;
-    if (!xfer_unpack_request_payload(payload, len, &watermark_epoch)) {
-        *resp_len = 0;
-        return;
-    }
+    (void)payload;
+    (void)len;
     // A REQUEST always starts a fresh transfer, discarding any prior
     // in-flight one — the logger stays stateless-per-poll and just answers
     // whatever it most recently received.
-    start_transfer(watermark_epoch);
+    start_transfer();
     build_data_packet(0, resp, resp_size, resp_len);
 }
 
@@ -180,11 +174,7 @@ static void handle_ack(const uint8_t *payload, size_t len, char *resp,
                                  s_session.total_sets *
                                      (uint32_t)s_session.n_sensors -
                                  1;
-            temp_record_t rec;
-            uint32_t epoch = sd_ring_get(last_seq, &rec)
-                                  ? rec.epoch
-                                  : sd_ring_confirmed_epoch();
-            sd_ring_set_confirmed(last_seq, epoch);
+            sd_ring_set_confirmed(last_seq);
         }
         // Deliberately not marked inactive: a genuinely duplicate final ACK
         // (this reply got lost, receiver retried) must land here again and

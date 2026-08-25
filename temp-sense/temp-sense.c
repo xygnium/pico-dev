@@ -217,14 +217,7 @@ static void handle_ack(const char *cmd, char *resp, size_t resp_size) {
         return;
     }
 
-    // ack only ever carried a seq, but sd_ring's watermark is now
-    // dual-tracked by (seq, epoch) for the v1.2 protocol's benefit. Look up
-    // the epoch this seq actually carries so the two stay in step; if the
-    // slot doesn't validate (stale/corrupt CRC — seq is still in-range, just
-    // unreadable), leave confirmed_epoch where it was rather than guessing.
-    temp_record_t rec;
-    uint32_t epoch = sd_ring_get(seq, &rec) ? rec.epoch : sd_ring_confirmed_epoch();
-    sd_ring_set_confirmed(seq, epoch);
+    sd_ring_set_confirmed(seq);
     snprintf(resp, resp_size, "ack: confirmed %lu\n", (unsigned long)seq);
 }
 

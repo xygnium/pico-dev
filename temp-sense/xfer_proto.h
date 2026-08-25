@@ -83,13 +83,11 @@ void xfer_pack_data_header(uint8_t out[XFER_DATA_HEADER_LEN],
 // is the caller's job).
 bool xfer_unpack_msg_header(const uint8_t *in, size_t len, uint8_t *msg_type);
 
-/* --------------------------------------------------------- REQUEST payload */
-
-// watermark_epoch(4), immediately after the message header.
-#define XFER_REQUEST_PAYLOAD_LEN 4u
-
-bool xfer_unpack_request_payload(const uint8_t *in, size_t len,
-                                  uint32_t *watermark_epoch);
+// REQUEST carries no payload -- there is exactly one collector for this
+// device, always (see the project's single-requestor constraint), so the
+// logger always resumes from its own sd_ring_confirmed_seq() + 1 rather
+// than trusting a receiver-asserted position. The message header alone
+// (XFER_MSG_HEADER_LEN, above) is the entire REQUEST message.
 
 /* ------------------------------------------------------------- ACK payload */
 

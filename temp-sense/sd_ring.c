@@ -11,8 +11,8 @@
  * Layout on the card (FatFs, ../sdsc/ pattern — "reserving" space is simply
  * not filling the card):
  *
- *   ring.dat   64MiB, preallocated once at first boot, never grows
- *   meta.dat   one sector: sequence high-water and confirmed watermark
+ *   ring.dat        64MiB, preallocated once at first boot, never grows
+ *   ring_state.dat  one sector: sequence high-water and confirmed watermark
  *
  * Records occupy a fixed slot (seq % SD_RING_CAPACITY), so reading a seq back
  * is a seek rather than a scan.
@@ -35,38 +35,33 @@
 #include "crc32.h"
 
 #define RING_PATH "ring.dat"
-#define META_PATH "meta.dat"
+#define RING_STATE_PATH "ring_state.dat"
 
-#define META_MAGIC   0x314d5354u  // "TSM1"
-#define META_VERSION 1u
+#define RING_STATE_MAGIC   0x31525354u  // "TSR1"
+#define RING_STATE_VERSION 1u
 
-// Metadata, one record per sector-aligned write.
+// The ring's persistent bookkeeping, one record per sector-aligned write.
 typedef struct {
     uint32_t magic;
     uint32_t version;
     uint32_t next_seq;   // high-water hint; the boot probe refines it
     uint32_t confirmed;  // last seq the collector has durably stored (ack'd)
     uint32_t capacity;   // guards against the ring being resized under us
-    // The wire watermark for the v1.2 UDP protocol is a timestamp, not a
-    // seq — dual-tracked alongside `confirmed` rather than replacing it,
-    // since `confirmed`/seq is still what makes steady-state resume O(1).
-    // 0 means "unknown" (old meta.dat predating this field, or a recovery
-    // path that couldn't determine it) — see sd_ring_find_seq_after_epoch().
-    uint32_t confirmed_epoch;
-    uint32_t reserved[1];
+    uint32_t reserved[2];
     uint32_t crc32;      // over bytes [0, 28)
-} sd_meta_t;
+} sd_ring_state_t;
 
-_Static_assert(sizeof(sd_meta_t) == 32, "sd_meta_t must be 32 bytes");
+_Static_assert(sizeof(sd_ring_state_t) == 32, "sd_ring_state_t must be 32 bytes");
 
-// Metadata is persisted lazily rather than after every update. That is safe
-// because of two properties that already hold: the boot-time probe below
-// repairs a stale next_seq by reading forward from it, and the collector
-// re-fetches and re-acks idempotently, so a stale watermark after an unclean
-// power-down costs at most a few records it already had — harmless. Writing
-// it eagerly would instead make one sector a far worse wear hotspot than the
-// whole ring, since it would be rewritten after every single ack.
-#define META_PERSIST_INTERVAL 256u
+// Ring state is persisted lazily rather than after every update. That is
+// safe because of two properties that already hold: the boot-time probe
+// below repairs a stale next_seq by reading forward from it, and the
+// collector re-fetches and re-acks idempotently, so a stale watermark after
+// an unclean power-down costs at most a few records it already had —
+// harmless. Writing it eagerly would instead make one sector a far worse
+// wear hotspot than the whole ring, since it would be rewritten after every
+// single ack.
+#define RING_STATE_PERSIST_INTERVAL 256u
 
 // Cluster link map for fast seek. FF_USE_FASTSEEK is enabled, so with this
 // table a seek into the 64MB ring is a lookup instead of a FAT chain walk —
@@ -83,11 +78,10 @@ static bool  mounted   = false;
 static bool  ring_open = false;
 static DWORD clmt[CLMT_ENTRIES];
 
-static uint32_t next_seq        = 0;
-static uint32_t confirmed_seq   = 0;
-static uint32_t confirmed_epoch = 0;
-static uint32_t puts_since_meta = 0;
-static bool     meta_dirty      = false;
+static uint32_t next_seq              = 0;
+static uint32_t confirmed_seq         = 0;
+static uint32_t puts_since_ring_state = 0;
+static bool     ring_state_dirty      = false;
 
 /* ------------------------------------------------------------- slot access */
 
@@ -141,10 +135,10 @@ static bool seq_present(uint32_t seq) {
  */
 
 // Walk forward from a known-good starting point to find the true end. The
-// metadata hint is deliberately stale (see META_PERSIST_INTERVAL), so this
-// closes the gap: doubling to bracket the end, then a binary search inside
-// the bracket. O(log gap) sector reads, no fixed bound on how stale the hint
-// may be.
+// ring state's hint is deliberately stale (see RING_STATE_PERSIST_INTERVAL),
+// so this closes the gap: doubling to bracket the end, then a binary search
+// inside the bracket. O(log gap) sector reads, no fixed bound on how stale
+// the hint may be.
 static uint32_t probe_forward(uint32_t start) {
     if (!seq_present(start)) return start;
 
@@ -171,9 +165,9 @@ static uint32_t probe_forward(uint32_t start) {
     return lo + 1;
 }
 
-// Used only when meta.dat is missing or unreadable — a replaced or corrupted
-// card. Recovers the high-water mark from the ring contents alone in ~21
-// sector reads rather than scanning two million records.
+// Used only when ring_state.dat is missing or unreadable — a replaced or
+// corrupted card. Recovers the high-water mark from the ring contents alone
+// in ~21 sector reads rather than scanning two million records.
 static uint32_t scan_next_seq(void) {
     uint32_t last;
     if (!slot_seq(SD_RING_CAPACITY - 1, &last)) {
@@ -210,42 +204,43 @@ static uint32_t scan_next_seq(void) {
     return newest + 1;
 }
 
-/* --------------------------------------------------------------- metadata */
+/* ------------------------------------------------------------ ring state */
 
-static bool meta_load(sd_meta_t *out) {
+static bool ring_state_load(sd_ring_state_t *out) {
     FIL f;
     UINT br = 0;
-    if (f_open(&f, META_PATH, FA_READ) != FR_OK) return false;
+    if (f_open(&f, RING_STATE_PATH, FA_READ) != FR_OK) return false;
     FRESULT fr = f_read(&f, out, sizeof *out, &br);
     f_close(&f);
     if (fr != FR_OK || br != sizeof *out) return false;
-    if (out->magic != META_MAGIC || out->version != META_VERSION) return false;
-    if (crc32_of(out, offsetof(sd_meta_t, crc32)) != out->crc32) return false;
+    if (out->magic != RING_STATE_MAGIC || out->version != RING_STATE_VERSION) {
+        return false;
+    }
+    if (crc32_of(out, offsetof(sd_ring_state_t, crc32)) != out->crc32) return false;
     return out->capacity == SD_RING_CAPACITY;
 }
 
-static bool meta_store(void) {
+static bool ring_state_store(void) {
     if (!mounted) return false;
-    sd_meta_t m;
-    memset(&m, 0, sizeof m);
-    m.magic     = META_MAGIC;
-    m.version   = META_VERSION;
-    m.next_seq  = next_seq;
-    m.confirmed = confirmed_seq;
-    m.capacity  = SD_RING_CAPACITY;
-    m.confirmed_epoch = confirmed_epoch;
-    m.crc32     = crc32_of(&m, offsetof(sd_meta_t, crc32));
+    sd_ring_state_t st;
+    memset(&st, 0, sizeof st);
+    st.magic     = RING_STATE_MAGIC;
+    st.version   = RING_STATE_VERSION;
+    st.next_seq  = next_seq;
+    st.confirmed = confirmed_seq;
+    st.capacity  = SD_RING_CAPACITY;
+    st.crc32     = crc32_of(&st, offsetof(sd_ring_state_t, crc32));
 
     FIL f;
     UINT bw = 0;
-    if (f_open(&f, META_PATH, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK) {
+    if (f_open(&f, RING_STATE_PATH, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK) {
         return false;
     }
-    FRESULT fr = f_write(&f, &m, sizeof m, &bw);
+    FRESULT fr = f_write(&f, &st, sizeof st, &bw);
     f_close(&f);
-    if (fr == FR_OK && bw == sizeof m) {
-        puts_since_meta = 0;
-        meta_dirty = false;
+    if (fr == FR_OK && bw == sizeof st) {
+        puts_since_ring_state = 0;
+        ring_state_dirty = false;
         return true;
     }
     return false;
@@ -381,40 +376,37 @@ bool sd_ring_init(const ds3231_datetime_t *boot_dt) {
         return false;
     }
 
-    // Recover the high-water mark: the metadata hint if we have one, then a
-    // forward probe to cover records written since it was last persisted.
-    sd_meta_t m;
-    bool have_meta = meta_load(&m);
+    // Recover the high-water mark: the ring state's hint if we have one,
+    // then a forward probe to cover records written since it was last
+    // persisted.
+    sd_ring_state_t st;
+    bool have_state = ring_state_load(&st);
 
     // Trust the hint only if the record immediately before it is still on the
     // card. If it is not, the hint predates the ring's current contents — a
     // card swapped between devices, or written elsewhere — and probing forward
     // from it would stop at the hint and start re-issuing sequence numbers
     // that are already in use. Falling back to a scan costs ~21 sector reads.
-    bool hint_ok = have_meta &&
-                   (m.next_seq == 0 || seq_present(m.next_seq - 1));
+    bool hint_ok = have_state &&
+                   (st.next_seq == 0 || seq_present(st.next_seq - 1));
 
     if (hint_ok) {
-        confirmed_seq = m.confirmed;
-        confirmed_epoch = m.confirmed_epoch;
-        next_seq = probe_forward(m.next_seq);
+        confirmed_seq = st.confirmed;
+        next_seq = probe_forward(st.next_seq);
     } else {
-        if (have_meta) {
+        if (have_state) {
             printf("sd: %s is stale (seq %lu is no longer on the card) — "
                    "recovering from the ring\n",
-                   META_PATH, (unsigned long)m.next_seq);
+                   RING_STATE_PATH, (unsigned long)st.next_seq);
         } else {
             printf("sd: no usable %s — recovering sequence from the ring\n",
-                   META_PATH);
+                   RING_STATE_PATH);
         }
         next_seq = scan_next_seq();
-        // Nothing known to be unconfirmed, unless the metadata's watermark is
-        // still coherent with what the scan found. Same reasoning applies to
-        // the epoch half — 0 ("unknown") if the seq half isn't trustworthy
-        // either, since the two must move together.
-        bool meta_coherent = have_meta && m.confirmed <= next_seq;
-        confirmed_seq = meta_coherent ? m.confirmed : next_seq;
-        confirmed_epoch = meta_coherent ? m.confirmed_epoch : 0;
+        // Nothing known to be unconfirmed, unless the saved watermark is
+        // still coherent with what the scan found.
+        bool state_coherent = have_state && st.confirmed <= next_seq;
+        confirmed_seq = state_coherent ? st.confirmed : next_seq;
     }
 
     g_sd_ready = true;
@@ -423,7 +415,7 @@ bool sd_ring_init(const ds3231_datetime_t *boot_dt) {
            (unsigned long)SD_RING_CAPACITY,
            (unsigned long long)(SD_RING_BYTES >> 20),
            (unsigned long)next_seq, (unsigned long)confirmed_seq);
-    meta_store();
+    ring_state_store();
     return true;
 }
 
@@ -457,8 +449,8 @@ bool sd_ring_put(const temp_record_t *rec) {
     }
 
     if (r.seq >= next_seq) next_seq = r.seq + 1;
-    puts_since_meta++;
-    meta_dirty = true;
+    puts_since_ring_state++;
+    ring_state_dirty = true;
     return true;
 }
 
@@ -491,61 +483,9 @@ uint32_t sd_ring_confirmed_seq(void) {
     return confirmed_seq;
 }
 
-uint32_t sd_ring_confirmed_epoch(void) {
-    return confirmed_epoch;
-}
-
-void sd_ring_set_confirmed(uint32_t seq, uint32_t epoch) {
+void sd_ring_set_confirmed(uint32_t seq) {
     confirmed_seq = seq;
-    confirmed_epoch = epoch;
-    meta_dirty = true;
-}
-
-// Smallest seq in [oldest, next) whose epoch is strictly greater than
-// `after_epoch`, or sd_ring_next_seq() if the receiver is already fully
-// caught up. This is the recovery path for a REQUEST whose watermark is
-// behind the device's own confirmed_epoch (a new or restored receiver) —
-// the steady-state case (watermark == confirmed_epoch) resumes cheaply from
-// confirmed_seq + 1 instead, without calling this.
-//
-// Assumes epoch is monotonic non-decreasing with seq, which holds in the
-// normal case (each sensor cycle's epoch is >= the previous one's). That can
-// be violated — an operator running `settime` backward mid-log — so the
-// boundary is sanity-checked before trusting bisection; a linear scan is the
-// safe fallback rather than letting a bad assumption silently return the
-// wrong point.
-uint32_t sd_ring_find_seq_after_epoch(uint32_t after_epoch) {
-    uint32_t oldest = sd_ring_oldest_seq();
-    uint32_t hi_bound = next_seq;
-    if (oldest >= hi_bound) return hi_bound;
-
-    temp_record_t lo_rec, hi_rec;
-    bool have_lo = sd_ring_get(oldest, &lo_rec);
-    bool have_hi = sd_ring_get(hi_bound - 1, &hi_rec);
-
-    if (!have_lo || !have_hi || lo_rec.epoch > hi_rec.epoch) {
-        for (uint32_t s = oldest; s < hi_bound; s++) {
-            temp_record_t rec;
-            if (sd_ring_get(s, &rec) && rec.epoch > after_epoch) return s;
-        }
-        return hi_bound;
-    }
-
-    // Lower-bound binary search: find the first seq whose epoch exceeds
-    // after_epoch. A slot that fails to read (stale/corrupt CRC) is treated
-    // like "epoch <= after_epoch" — its value can't be trusted either way,
-    // and the next real record downstream is still found.
-    uint32_t lo = oldest, hi = hi_bound;
-    while (lo < hi) {
-        uint32_t mid = lo + (hi - lo) / 2;
-        temp_record_t rec;
-        if (sd_ring_get(mid, &rec) && rec.epoch > after_epoch) {
-            hi = mid;
-        } else {
-            lo = mid + 1;
-        }
-    }
-    return lo;
+    ring_state_dirty = true;
 }
 
 void sd_ring_sync(void) {
@@ -554,8 +494,8 @@ void sd_ring_sync(void) {
     if (fr != FR_OK) {
         printf("sd: f_sync failed: %s (%d)\n", FRESULT_str(fr), fr);
     }
-    if (meta_dirty && puts_since_meta >= META_PERSIST_INTERVAL) {
-        meta_store();
+    if (ring_state_dirty && puts_since_ring_state >= RING_STATE_PERSIST_INTERVAL) {
+        ring_state_store();
     }
 }
 
