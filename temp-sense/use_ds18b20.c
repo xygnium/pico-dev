@@ -22,6 +22,7 @@
 #include "temp_record.h"
 #include "temp_store.h"
 #include "sd_ring.h"
+#include "label_store.h"
 
 // Modify these definitions as required, to match connections.
 #define ONEWIRE_GPIO_PIN 15
@@ -136,6 +137,16 @@ int example_ds18b20() {
     g_temp_num_devs = num_devs;
     for (int i = 0; i < num_devs; i += 1) {
         g_temp_romcode[i] = romcode[i];
+    }
+
+    // Auto-register any romcode not already in labels.dat, with a
+    // placeholder name -- the operator renames it later with the `label
+    // <index> <string>` command, one newly-added probe at a time.
+    int new_labels = label_store_register_new(g_temp_romcode, num_devs);
+    if (new_labels > 0) {
+        printf("labels: registered %d new sensor(s) as \"%s\", "
+               "use `label <index> <string>` to rename\n",
+               new_labels, LABEL_PLACEHOLDER);
     }
 
     // Anchors the sample schedule. Deadlines are advanced from the previous

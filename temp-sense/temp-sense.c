@@ -8,6 +8,7 @@
 #include "temp_store.h"
 #include "sd_ring.h"
 #include "config_store.h"
+#include "label_store.h"
 #include "xfer_proto.h"
 #include "xfer_session.h"
 
@@ -267,6 +268,74 @@ static void handle_config(const char *cmd, char *resp, size_t resp_size) {
              "usage: config get | config set <max_retries> <retry_interval_ms>\n");
 }
 
+// `label <index> <string>` -- renames the location string for the probe
+// currently at wire index <index> (as reported by `sensors`), by resolving
+// it to a romcode and updating labels.dat. Only renames an entry that
+// already exists -- label_store_register_new() is what creates one, at
+// boot, when a romcode is first seen on the bus (see label_store.h).
+static void handle_label(const char *cmd, char *resp, size_t resp_size) {
+    int idx = -1;
+    int consumed = 0;
+    if (sscanf(cmd, "label %d %n", &idx, &consumed) != 1 || consumed == 0) {
+        snprintf(resp, resp_size, "usage: label <index> <string>\n");
+        return;
+    }
+
+    const char *raw_label = cmd + consumed;
+    size_t len = strlen(raw_label);
+    while (len > 0 && (raw_label[len - 1] == ' ' || raw_label[len - 1] == '\r' ||
+                        raw_label[len - 1] == '\n')) {
+        len--;
+    }
+    if (len == 0) {
+        snprintf(resp, resp_size, "usage: label <index> <string>\n");
+        return;
+    }
+    char label[LABEL_STRING_LEN];
+    if (len >= sizeof(label)) {
+        snprintf(resp, resp_size, "label: refused -- name too long (max %zu chars)\n",
+                 sizeof(label) - 1);
+        return;
+    }
+    memcpy(label, raw_label, len);
+    label[len] = '\0';
+
+    if (idx < 0 || idx >= g_temp_num_devs) {
+        snprintf(resp, resp_size, "label: refused -- index must be 0..%d\n",
+                 g_temp_num_devs - 1);
+        return;
+    }
+
+    uint64_t romcode = g_temp_romcode[idx];
+    if (label_store_set(romcode, label)) {
+        snprintf(resp, resp_size, "label: %d (0x%016llx) -> %s\n", idx,
+                 (unsigned long long)romcode, label);
+    } else {
+        snprintf(resp, resp_size,
+                 "label: refused -- romcode 0x%016llx not registered yet, "
+                 "or sd unavailable\n", (unsigned long long)romcode);
+    }
+}
+
+// `labels` -- dumps the full romcode->label table (labels.dat), independent
+// of what's currently connected -- unlike `sensors` (this boot's active
+// roster only), this also includes probes registered in a past boot that
+// aren't on the bus right now. The collector mirrors this locally, and is
+// expected to re-fetch it only once the operator says a sensor addition is
+// complete (see label_store.h).
+static void handle_labels(char *resp, size_t resp_size) {
+    size_t off = 0;
+    int n = label_store_count();
+    off += snprintf(resp + off, resp_size - off, "labels: %d\n", n);
+    for (int i = 0; i < n && off < resp_size; i++) {
+        uint64_t romcode;
+        char label[LABEL_STRING_LEN];
+        if (!label_store_get(i, &romcode, label, sizeof label)) continue;
+        off += snprintf(resp + off, resp_size - off, "0x%016llx %s\n",
+                         (unsigned long long)romcode, label);
+    }
+}
+
 // The v1.2 binary protocol (REQUEST/ACK/NACK in, DATA out) is routed by its
 // leading magic byte, checked before any ASCII comparison — XFER_MAGIC
 // (0xA5) falls outside printable ASCII, so there is no ambiguity either way.
@@ -291,6 +360,10 @@ static void handle_wifi_cmd(const char *cmd, size_t cmd_len, char *resp,
         handle_ack(cmd, resp, resp_size);
     } else if (strcmp(cmd, "sensors") == 0) {
         handle_sensors(resp, resp_size);
+    } else if (strcmp(cmd, "labels") == 0) {
+        handle_labels(resp, resp_size);
+    } else if (strncmp(cmd, "label", 5) == 0) {
+        handle_label(cmd, resp, resp_size);
     } else if (strncmp(cmd, "config", 6) == 0) {
         handle_config(cmd, resp, resp_size);
     } else if (strcmp(cmd, "read") == 0) {
@@ -363,6 +436,7 @@ int main() {
         // error — config_store_init() seeds in-memory defaults and leaves
         // the file untouched until an explicit `config set`.
         config_store_init();
+        label_store_init();
     }
 
     int wifi_err = wifi_connect(WIFI_COUNTRY, WIFI_SSID, WIFI_PASS, WIFI_AUTH);

@@ -22,6 +22,7 @@ add_executable(temp-sense
     crc32.c
     xfer_proto.c
     config_store.c
+    label_store.c
     xfer_session.c
 )
 
