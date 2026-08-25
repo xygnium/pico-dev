@@ -114,7 +114,6 @@ before adding the next:
 | `settime YYYY-MM-DD HH:MM:SS D` | Set the RTC. `D` is day-of-week, 1=Monday. Send **UTC** — `udp_client.py settime` (no args) does this for you from your host clock. |
 | `sd` | Ring buffer status: capacity, records stored, seq range, confirmed watermark, backlog. |
 | `read` | Most recent reading, for a quick manual check. |
-| `fetch <from_seq> [count]` / `ack <seq>` | Legacy manual pull-and-confirm mechanism, superseded by `collector.py`'s binary protocol for normal use — still available for manual inspection. |
 | `format` | **Destroys everything on the SD card** — the ring, `config.dat`, and `labels.dat` alike, since it's a full card reformat, not a per-file delete. Requires the exact confirmation token; `udp_client.py format` prompts before sending it. |
 
 ## Troubleshooting
