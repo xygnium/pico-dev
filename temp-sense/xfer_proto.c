@@ -95,3 +95,17 @@ bool xfer_unpack_nack_payload(const uint8_t *in, size_t len,
     *count = n;
     return true;
 }
+
+/* ------------------------------------------------------------ DATA payload */
+
+size_t xfer_pack_set_header(uint8_t *out, uint32_t timestamp, uint8_t count) {
+    put_u32le(out, timestamp);
+    out[4] = count;
+    return 5u;
+}
+
+size_t xfer_pack_set_entry(uint8_t *out, uint8_t sensor_id, int16_t temperature) {
+    out[0] = sensor_id;
+    put_u16le(out + 1, (uint16_t)temperature);
+    return 3u;
+}

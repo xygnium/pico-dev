@@ -8,6 +8,8 @@
 #include "temp_store.h"
 #include "sd_ring.h"
 #include "config_store.h"
+#include "xfer_proto.h"
+#include "xfer_session.h"
 
 extern int example_ds18b20();
 
@@ -272,14 +274,18 @@ static void handle_config(const char *cmd, char *resp, size_t resp_size) {
              "usage: config get | config set <max_retries> <retry_interval_ms>\n");
 }
 
-// All commands today are plain ASCII in and out, so this just forwards to
-// the existing string-based handlers and measures the reply with strlen()
-// at the end. `cmd_len` is unused for now — it exists so a future binary
-// command (checked by magic byte, before this ASCII chain) can dispatch
-// without relying on NUL-termination.
+// The v1.2 binary protocol (REQUEST/ACK/NACK in, DATA out) is routed by its
+// leading magic byte, checked before any ASCII comparison — XFER_MAGIC
+// (0xA5) falls outside printable ASCII, so there is no ambiguity either way.
+// Every other command today is plain ASCII in and out, so those just
+// forward to the existing string-based handlers and measure the reply with
+// strlen() at the end.
 static void handle_wifi_cmd(const char *cmd, size_t cmd_len, char *resp,
                              size_t resp_size, size_t *resp_len) {
-    (void)cmd_len;
+    if (cmd_len >= 1 && (uint8_t)cmd[0] == XFER_MAGIC) {
+        xfer_session_handle(cmd, cmd_len, resp, resp_size, resp_len);
+        return;
+    }
     if (strncmp(cmd, "settime", 7) == 0) {
         handle_settime(cmd, resp, resp_size);
     } else if (strncmp(cmd, "format", 6) == 0) {

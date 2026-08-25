@@ -114,4 +114,13 @@ bool xfer_unpack_nack_payload(const uint8_t *in, size_t len,
                                uint32_t *transfer_id, uint16_t *seqs,
                                uint8_t max_seqs, uint8_t *count);
 
+/* --------------------------------------------- DATA payload (logger -> receiver) */
+
+// One set's fixed prefix: timestamp(4) + count(1). Returns bytes written (5).
+size_t xfer_pack_set_header(uint8_t *out, uint32_t timestamp, uint8_t count);
+
+// One set's per-sensor entry: sensor_id(1) + temperature(2, signed
+// fixed-point, DS18B20 native 1/16 degC). Returns bytes written (3).
+size_t xfer_pack_set_entry(uint8_t *out, uint8_t sensor_id, int16_t temperature);
+
 #endif
