@@ -66,7 +66,10 @@ bool ow_reset (OW *ow) {
 
 // Find ROM codes (64-bit hardware addresses) of all connected devices.
 // See https://www.analog.com/en/app-notes/1wire-search-algorithm.html
-// Returns: the number of devices found (up to maxdevs) or -1 if an error occurrred.
+// Returns: the number of devices found (up to maxdevs). A bus error (e.g.
+// noise on a long/heavily-loaded line) stops the search early but does not
+// discard devices already found in earlier passes -- the caller always sees
+// a real, usable count rather than a bare error sentinel.
 // ow: pointer to an OW driver struct
 // romcodes: location at which store the addresses (NULL means don't store)
 // maxdevs: maximum number of devices to find (0 means no limit)
@@ -85,13 +88,13 @@ int ow_romsearch (OW *ow, uint64_t *romcodes, int maxdevs, uint command) {
         finished = true;
         branch_point = next_branch_point;
         if (ow_reset (ow) == false) {
-            num_found = 0;     // no slaves present
             finished = true;
             break;
         }
         for (int i = 0; i < 8; i += 1) {    // send search command as single bits
             ow_send (ow, command >> i);
         }
+        bool error = false;
         for (index = 0; index < 64; index += 1) {   // determine romcode bits 0..63 (see ref)
             uint a = ow_read (ow);
             uint b = ow_read (ow);
@@ -110,9 +113,9 @@ int ow_romsearch (OW *ow, uint64_t *romcodes, int maxdevs, uint command) {
                     }
                 }
             } else if (a != 0 && b != 0) {  // (a, b) = (1, 1) error (e.g. device disconnected)
-                num_found = -2;             // function will return -1
+                error = true;
                 finished = true;
-                break;                      // terminate for loop
+                break;                      // terminate for loop; keep devices already found
             } else {
                 if (a == 0) {               // (a, b) = (0, 1) or (1, 0)
                     ow_send (ow, 0);
@@ -124,10 +127,12 @@ int ow_romsearch (OW *ow, uint64_t *romcodes, int maxdevs, uint command) {
             }
         }                                   // end of for loop
 
-        if (romcodes != NULL) {
-            romcodes[num_found] = romcode;  // store the romcode
+        if (!error) {
+            if (romcodes != NULL) {
+                romcodes[num_found] = romcode;  // store the romcode
+            }
+            num_found += 1;
         }
-        num_found += 1;
     }                                       // end of while loop
 
     onewire_sm_init (ow->pio, ow->sm, ow->offset, ow->gpio, 8); // restore 8-bit mode
