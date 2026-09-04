@@ -10,19 +10,28 @@ Usage:
     ./collector.py                       # pull into ./temp_data.csv
     ./collector.py --csv /path/to.csv
     ./collector.py --host 1.2.3.4
-    ./collector.py --labels              # refresh sensor_labels.csv instead
+    ./collector.py --table               # refresh sensor_table.csv instead
 
 Exit status is 0 on a fully-completed transfer, 1 if it gave up partway
 (no response, or a packet failed CRC past the device's configured
 max_retries). A partial run is always safe to just retry next cycle: the
 device only advances its watermark on a confirmed final ACK, and rows are
-deduped here by (sensor_id, timestamp), so re-pulled data is a no-op.
+deduped here by (label, timestamp), so re-pulled data is a no-op.
 
-Readings are stored by sensor_id (this session's wire index) only, not
-romcode or a location string -- resolve those separately via --labels,
-which mirrors the device's romcode->location table (see label_store.h) on
-demand. Run --labels by hand once a sensor-addition session is complete;
-it is never fetched automatically as part of a normal pull.
+The wire sensor_id is only a transport-layer shorthand -- it exists to keep
+DATA packets compact, and its only stability guarantee is "constant for the
+life of any unconfirmed backlog on the device" (see label_store.h and
+OPERATIONS.md's decomm/wipetable workflow). This script resolves it to the
+device's current label immediately, from sensor_table.csv, and stores rows
+by label rather than by index -- run --table by hand once after any
+add/decomm/wipetable roster change (it is never fetched automatically as
+part of a normal pull), and a normal pull refuses to run if sensor_table.csv
+doesn't exist yet.
+
+Note: a temp_data.csv written by an older version of this script is keyed
+by raw sensor_id, not label, and its `valid` column doesn't exist -- it
+won't merge cleanly with rows this version writes. Archive or rename an
+existing file before first use of this version.
 """
 
 import argparse
@@ -94,9 +103,9 @@ def parse_data_packet(buf):
             off += 5
             readings = []
             for _ in range(count):
-                sensor_id, raw = struct.unpack_from("<Bh", payload, off)
-                off += 3
-                readings.append((sensor_id, raw))
+                sensor_id, raw, valid = struct.unpack_from("<BhB", payload, off)
+                off += 4
+                readings.append((sensor_id, raw, valid))
             sets.append((timestamp, readings))
 
     return {
@@ -109,29 +118,50 @@ def parse_data_packet(buf):
     }
 
 
-def fetch_labels(sock, addr):
-    """`labels` -> [(romcode_str, label), ...], the full romcode->location
-    table (labels.dat) -- independent of what's on the bus right now. For
-    the operator-triggered --labels refresh, not the normal pull path."""
+def fetch_table(sock, addr):
+    """`table` -> [(index, romcode_str, label), ...], the device's current
+    persistent sensor table -- index is stable across reboots (only an
+    explicit register/decomm/wipe changes it, see label_store.h). For the
+    operator-triggered --table refresh, not the normal pull path."""
     sock.settimeout(SETUP_TIMEOUT)
-    sock.sendto(b"labels", addr)
+    sock.sendto(b"table", addr)
     data, _ = sock.recvfrom(BUFSIZE)
     lines = data.decode().strip("\n").splitlines()
-    if not lines or not lines[0].startswith("labels:"):
-        raise RuntimeError("unexpected 'labels' reply: {!r}".format(data))
+    if not lines or not lines[0].startswith("table:"):
+        raise RuntimeError("unexpected 'table' reply: {!r}".format(data))
     n = int(lines[0].split()[1])
     entries = []
     for line in lines[1:1 + n]:
-        romcode_str, _, label = line.partition(" ")
-        entries.append((romcode_str, label))
+        idx_str, _, rest = line.partition(" ")
+        romcode_str, _, label = rest.partition(" ")
+        entries.append((int(idx_str), romcode_str, label))
     return entries
 
 
-def write_labels_csv(entries, path):
+def write_table_csv(entries, path):
     with open(path, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["romcode", "label"])
+        writer.writerow(["index", "romcode", "label"])
         writer.writerows(entries)
+
+
+def load_table(path):
+    """sensor_id (int) -> label, from a --table refresh. Raises if the file
+    doesn't exist -- a normal pull must not guess at identities it hasn't
+    been told."""
+    if not os.path.exists(path):
+        raise RuntimeError(
+            "{} not found -- run `./collector.py --table` at least once "
+            "before pulling".format(path))
+    table = {}
+    with open(path, newline="") as f:
+        reader = csv.reader(f)
+        next(reader, None)  # header
+        for row in reader:
+            if len(row) < 3:
+                continue
+            table[int(row[0])] = row[2]
+    return table
 
 
 def fetch_config(sock, addr):
@@ -147,7 +177,7 @@ def fetch_config(sock, addr):
 
 
 def load_seen_keys(path):
-    """(sensor_id, timestamp) keys already on disk, so a re-pulled packet
+    """(label, timestamp) keys already on disk, so a re-pulled packet
     (retry, or a whole session re-offered after a prior abandoned run) is
     skipped rather than duplicated."""
     seen = set()
@@ -159,14 +189,21 @@ def load_seen_keys(path):
         for row in reader:
             if len(row) < 2:
                 continue
-            seen.add((int(row[1]), int(row[0])))  # (sensor_id, timestamp_epoch)
+            seen.add((row[1], int(row[0])))  # (label, timestamp_epoch)
     return seen
 
 
-def write_sets(sets, writer, csv_file, seen_keys):
+def write_sets(sets, writer, csv_file, seen_keys, table):
     for timestamp, readings in sets:
-        for sensor_id, raw in readings:
-            key = (sensor_id, timestamp)
+        for sensor_id, raw, valid in readings:
+            if sensor_id not in table:
+                raise RuntimeError(
+                    "sensor_id {} not in sensor_table.csv -- the device's "
+                    "table has changed since the last --table refresh; "
+                    "re-run `./collector.py --table` before pulling again"
+                    .format(sensor_id))
+            label = table[sensor_id]
+            key = (label, timestamp)
             if key in seen_keys:
                 continue
             seen_keys.add(key)
@@ -174,9 +211,10 @@ def write_sets(sets, writer, csv_file, seen_keys):
                 timestamp, tz=datetime.timezone.utc).isoformat()
             writer.writerow([
                 timestamp,
-                sensor_id,
+                label,
                 iso,
                 "{:.4f}".format(raw / 16.0),
+                valid,
             ])
     csv_file.flush()
 
@@ -203,7 +241,7 @@ def send_final_ack(sock, addr, transfer_id, seq, max_retries, retry_interval_s):
 
 
 def run_transfer(sock, addr, max_retries, retry_interval_s,
-                  writer, csv_file, seen_keys):
+                  writer, csv_file, seen_keys, table):
     expected_seq = 0
     transfer_id = None
     outbound = msg_header(XFER_MSG_REQUEST)
@@ -246,7 +284,7 @@ def run_transfer(sock, addr, max_retries, retry_interval_s,
             continue
 
         attempts = 0
-        write_sets(pkt["sets"], writer, csv_file, seen_keys)
+        write_sets(pkt["sets"], writer, csv_file, seen_keys, table)
 
         if pkt["flags"] & XFER_FLAG_END:
             if not send_final_ack(sock, addr, transfer_id, expected_seq,
@@ -269,31 +307,38 @@ def main():
     ap.add_argument("--port", type=int, default=PORT)
     ap.add_argument("--csv", default="temp_data.csv",
                      help="output CSV path (default %(default)s)")
-    ap.add_argument("--labels", action="store_true",
-                     help="fetch the device's romcode->location table into "
-                          "--labels-file and exit, instead of pulling "
-                          "readings. Run this by hand once a sensor-"
-                          "addition session is complete (see "
+    ap.add_argument("--table", action="store_true",
+                     help="fetch the device's current persistent sensor "
+                          "table into --table-file and exit, instead of "
+                          "pulling readings. Run this by hand once after "
+                          "any add/decomm/wipetable roster change (see "
                           "label_store.h) -- it is never done as part of "
                           "a normal pull.")
-    ap.add_argument("--labels-file", default="sensor_labels.csv",
-                     help="output path for --labels (default %(default)s)")
+    ap.add_argument("--table-file", default="sensor_table.csv",
+                     help="output/input path for the sensor table "
+                          "(default %(default)s)")
     args = ap.parse_args()
     addr = (args.host, args.port)
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-    if args.labels:
+    if args.table:
         try:
-            entries = fetch_labels(sock, addr)
+            entries = fetch_table(sock, addr)
         except (socket.timeout, RuntimeError) as e:
             sock.close()
-            raise SystemExit("collector: labels fetch failed: {}".format(e))
+            raise SystemExit("collector: table fetch failed: {}".format(e))
         sock.close()
-        write_labels_csv(entries, args.labels_file)
-        print("collector: wrote {} label(s) to {}".format(
-            len(entries), args.labels_file))
+        write_table_csv(entries, args.table_file)
+        print("collector: wrote {} sensor(s) to {}".format(
+            len(entries), args.table_file))
         return
+
+    try:
+        table = load_table(args.table_file)
+    except RuntimeError as e:
+        sock.close()
+        raise SystemExit("collector: {}".format(e))
 
     try:
         max_retries, retry_interval_ms = fetch_config(sock, addr)
@@ -308,10 +353,11 @@ def main():
         writer = csv.writer(f)
         if not file_exists:
             writer.writerow(
-                ["timestamp_epoch", "sensor_id", "timestamp_utc", "temp_c"])
+                ["timestamp_epoch", "label", "timestamp_utc", "temp_c",
+                 "valid"])
             f.flush()
         ok = run_transfer(sock, addr, max_retries, retry_interval_s,
-                           writer, f, seen_keys)
+                           writer, f, seen_keys, table)
     sock.close()
     sys.exit(0 if ok else 1)
 

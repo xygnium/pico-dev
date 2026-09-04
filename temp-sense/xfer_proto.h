@@ -44,9 +44,10 @@
 #define XFER_DATA_HEADER_LEN 16u
 
 // Bytes for one "set": timestamp(4) + count(1) + count * [sensor_id(1) +
-// temperature(2)]. N_sensors is fixed per transfer (the roster doesn't
-// change mid-session), so every set in a transfer is this same size.
-#define XFER_SET_SIZE(n_sensors) (4u + 1u + (size_t)(n_sensors) * 3u)
+// temperature(2) + valid(1)]. N_sensors is fixed per transfer (the roster
+// doesn't change mid-session), so every set in a transfer is this same
+// size.
+#define XFER_SET_SIZE(n_sensors) (4u + 1u + (size_t)(n_sensors) * 4u)
 
 // Sets per packet: the most that fit in one packet's payload after the
 // 16-byte header, for a transfer with `n_sensors` active sensors. Computed
@@ -118,7 +119,10 @@ bool xfer_unpack_nack_payload(const uint8_t *in, size_t len,
 size_t xfer_pack_set_header(uint8_t *out, uint32_t timestamp, uint8_t count);
 
 // One set's per-sensor entry: sensor_id(1) + temperature(2, signed
-// fixed-point, DS18B20 native 1/16 degC). Returns bytes written (3).
-size_t xfer_pack_set_entry(uint8_t *out, uint8_t sensor_id, int16_t temperature);
+// fixed-point, DS18B20 native 1/16 degC) + valid(1, nonzero if temperature
+// is a real CRC-checked reading rather than a placeholder for a sensor that
+// didn't respond or failed its CRC this cycle). Returns bytes written (4).
+size_t xfer_pack_set_entry(uint8_t *out, uint8_t sensor_id, int16_t temperature,
+                            uint8_t valid);
 
 #endif

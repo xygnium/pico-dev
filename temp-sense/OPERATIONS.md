@@ -20,32 +20,35 @@ protocol's normal cadence):
 ```
 
 This appends new readings to `./temp_data.csv` (columns: `timestamp_epoch,
-sensor_id, timestamp_utc, temp_c`). `sensor_id` is a wire index, not a
-sensor's physical identity — see "Reading sensor locations" below to
-resolve it to a location.
+label, timestamp_utc, temp_c, valid`). The wire's `sensor_id` is only a
+transport shorthand — `collector.py` resolves it to the sensor's current
+location label immediately, using its local `sensor_table.csv`, so the CSV
+is keyed by label rather than by an index that's meaningful only within one
+collector run. `valid` is `1` for a real CRC-checked reading and `0` when
+that sensor didn't respond or failed its CRC that cycle (the row is still
+written, with `temp_c` meaningless) — a sensor going quiet shows up as a
+run of `valid=0` rows rather than silently disappearing from the log.
 
 Exit status is `0` on a complete pull, `1` if it gave up partway (device
 unreachable, or a packet failed CRC past the device's configured retry
 budget). **A failed run is always safe to just retry** — the device only
 advances its watermark on a confirmed final ACK, and rows are deduped by
-`(sensor_id, timestamp)`, so nothing is lost or duplicated by rerunning.
+`(label, timestamp)`, so nothing is lost or duplicated by rerunning.
+
+A normal pull refuses to run if `sensor_table.csv` doesn't exist yet — see
+"Reading sensor locations" below.
 
 ### Reading sensor locations
 
-`temp_data.csv` deliberately doesn't carry a romcode or location string per
-row (see "Adding a new sensor" for why). To find out what `sensor_id`
-values correspond to, in physical terms:
-
 ```
-./collector.py --labels
+./collector.py --table
 ```
 
-This fetches the device's full romcode→location table into
-`sensor_labels.csv` and exits — it does not pull readings. Cross-reference
-readings by also checking that session's `sensors` output (device
-command), which maps this boot's `sensor_id` to romcode. Run `--labels` by
-hand whenever you want a fresh copy; it's never fetched automatically as
-part of a normal pull.
+This fetches the device's current persistent sensor table (index, romcode,
+label) into `sensor_table.csv` and exits — it does not pull readings. Run
+it once before your first pull, and again after any `label`, `decomm`, or
+`wipetable` change (see "Adding a new sensor" and "Removing/replacing a
+sensor" below); it's never fetched automatically as part of a normal pull.
 
 ## Sample rate & retention
 
@@ -78,37 +81,73 @@ extended stretch (e.g. an extended remote deployment between site visits).
 
 ## Adding a new sensor
 
-Sensor indices (`sensor_id`) are only stable for the life of one boot's
-1-Wire scan — adding or removing a probe can shift indices for *other*,
-already-labeled probes too. Add sensors **one at a time**, and test each
-before adding the next:
+A sensor's index in the persistent table is stable across reboots — it
+only changes on an explicit register/decomm/wipe, never as a side effect
+of which probes happen to answer a boot's bus scan. Add sensors **one at a
+time**, and test each before adding the next:
 
 1. **Stop the collector cron/timer** for the duration of this process —
    the sensor roster is in flux and pulled data shouldn't be trusted until
    it's done.
 2. Physically connect **one** new probe to the 1-Wire bus.
 3. Reboot the Pico (power-cycle, or reflash) so the boot-time scan finds
-   it. The device auto-registers any new romcode with the placeholder
-   label `unlabeled` and logs how many new sensors it found.
-4. Check `sensors` to find the new probe's index, and `labels` to confirm
-   it shows up as `unlabeled`.
+   it. The device auto-registers any new romcode at the next free table
+   index with the placeholder label `unlabeled` and logs how many new
+   sensors it found.
+4. Check `table` to find the new probe's index and confirm it shows up as
+   `unlabeled`.
 5. Name it: `label <index> <location string>` (e.g. `label 3 attic` or
    `label 3 outdoor north wall` — multi-word strings are fine).
-6. Verify: `labels` again, confirm the new location string is there, and
+6. Verify: `table` again, confirm the new location string is there, and
    let a few sample cycles pass to sanity-check the reading looks
    reasonable (`read`, or `sd` for ring status).
 7. Repeat from step 2 for the next probe, if any.
 8. Once all additions are done, **restart the collector cron/timer**, and
-   run `./collector.py --labels` once to refresh `sensor_labels.csv` with
+   run `./collector.py --table` once to refresh `sensor_table.csv` with
    the finished roster.
+
+## Removing/replacing a sensor
+
+`decomm` removes a table entry and **compacts** the table — every later
+index shifts down by one, and that freed slot is whatever the next new
+registration gets. This is the normal way to retire a broken sensor or
+swap it for a new one at the same physical location. Because the SD ring
+replays history assuming a constant sensor count across any unconfirmed
+backlog, `decomm` (and the table wipe below) require the ring to be fully
+drained first:
+
+1. **Stop the collector cron/timer.**
+2. `pause` — stops sampling. The ring's backlog can only ever reach exactly
+   zero once sampling has actually stopped; otherwise a new reading always
+   lands between the collector's last ACK and your next command.
+3. Run `./collector.py` one more time to drain whatever backlog remains.
+   Check `sd` — you need `confirmed` to equal `seq`'s upper bound (backlog
+   of 1). If it isn't quite there yet, just rerun the collector; no new
+   readings are being generated while paused, so it will finish.
+4. `decomm <index>` (found via `table`). Refused if not paused, or if the
+   ring still has backlog.
+5. `resume` — restarts sampling immediately, without trying to catch up on
+   the paused interval.
+6. **Restart the collector cron/timer**, and run `./collector.py --table`
+   once to refresh `sensor_table.csv` — the freed index will be reused by
+   whatever sensor is registered next, so don't skip this.
+
+`wipetable yes-erase-sensor-table` clears the *entire* table (distinct from
+`format`, which erases the whole SD card) and immediately re-scans the bus
+to repopulate it from scratch — useful for starting a location scheme over.
+Same pause/drain precondition and `udp_client.py` confirmation-prompt
+pattern as `format`.
 
 ## Command reference
 
 | Command | Effect |
 |---|---|
-| `sensors` | This boot's wire index → romcode table (only currently-connected probes). |
-| `labels` | Full romcode → location table (`labels.dat`), including probes not currently connected. |
-| `label <index> <string>` | Rename the probe at wire index `<index>` (must already have a `labels.dat` entry — auto-created at boot). |
+| `table` | The persistent sensor table: index, romcode, label for every registered probe (including one not currently on the bus — its readings show as invalid rather than disappearing). |
+| `label <index> <string>` | Rename the probe at table index `<index>` (must already have a `labels.dat` entry — auto-created at boot). |
+| `pause` | Stop the sample loop. Required before `decomm`/`wipetable`, and before the ring backlog can reach exactly zero. |
+| `resume` | Restart the sample loop, from now (no catch-up burst for the paused interval). |
+| `decomm <index>` | Remove that table entry and compact — later indices shift down. Refused unless paused with a fully drained ring backlog. |
+| `wipetable yes-erase-sensor-table` | **Erases the whole sensor table** and immediately re-scans the bus to repopulate it. Distinct from `format`. Same pause/drain precondition; requires the exact confirmation token (`udp_client.py wipetable` prompts before sending it). |
 | `config get` | Show the receiver's retry policy (`max_retries`, `retry_interval_ms`) that `collector.py` reads at session start. |
 | `config set <max_retries> <retry_interval_ms>` | Update that policy. Bounds: retries 1–255, interval 100–600000ms. Defaults: 5 / 5000ms. |
 | `settime YYYY-MM-DD HH:MM:SS D` | Set the RTC. `D` is day-of-week, 1=Monday. Send **UTC** — `udp_client.py settime` (no args) does this for you from your host clock. |

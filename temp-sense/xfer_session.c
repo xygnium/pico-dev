@@ -114,11 +114,13 @@ static void build_data_packet(uint16_t seq, char *resp, size_t resp_size,
                                              (uint8_t)s_session.n_sensors);
         for (int k = 0; k < s_session.n_sensors; k++) {
             int16_t raw = 0;
+            uint8_t valid = 0;
             if (sd_ring_get(base_seq + (uint32_t)k, &rec)) {
                 raw = rec.raw;
+                valid = (rec.flags & TEMP_FLAG_VALID) ? 1u : 0u;
             }
             payload_len += xfer_pack_set_entry(payload + payload_len,
-                                                (uint8_t)k, raw);
+                                                (uint8_t)k, raw, valid);
         }
     }
 

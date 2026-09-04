@@ -39,20 +39,20 @@
 
 ## Payload (set format)
 
-Each set: `timestamp (4B) + count (1B) + count × [sensor_id (1B) + temperature (2B fixed-point)]`.
-Timestamp is shared per set (all sensors read together), not repeated per-sensor, saving bytes — sensor_id is a 1-byte index into a sensor table the receiver already has (not the full 8-byte DS18B20 ROM code).
+Each set: `timestamp (4B) + count (1B) + count × [sensor_id (1B) + temperature (2B fixed-point) + valid (1B)]`.
+Timestamp is shared per set (all sensors read together), not repeated per-sensor, saving bytes — sensor_id is a 1-byte index into the logger's persistent sensor table (see `label_store.h`; the `table` command fetches it), not the full 8-byte DS18B20 ROM code. `valid` is nonzero only if the reading is a real CRC-checked temperature; a sensor that didn't respond or failed its CRC that cycle still gets an entry (so every set always has exactly `N_sensors` entries), with `valid = 0` and `temperature` meaningless. The table's index only changes on an explicit register/decomm/wipe (never as a side effect of which probes happen to answer a boot's bus scan), so the receiver re-fetches it after such a change rather than once per session.
 
 ## Sizing (computed at runtime, not hardcoded)
 
 Keep total UDP payload ≤ 508 bytes to avoid IP fragmentation.
 
 ```
-set_size = 4 + 1 + N_sensors * 3
+set_size = 4 + 1 + N_sensors * 4
 SPP = floor((508 - 16) / set_size)
 ```
 
-Example: `N_sensors = 20` → `set_size = 65` → `SPP ≈ 7` sets/packet.
-Example: `N_sensors = 3` → `set_size = 14` → `SPP ≈ 35` sets/packet.
+Example: `N_sensors = 20` → `set_size = 85` → `SPP ≈ 5` sets/packet.
+Example: `N_sensors = 3` → `set_size = 17` → `SPP ≈ 28` sets/packet.
 Since `N_sensors` varies 3–20, compute `SPP` fresh per transfer rather than fixing it — a fixed SPP tuned for 20 sensors wastes bandwidth at 3, and a fixed SPP tuned for 3 sensors overflows the MTU at 20.
 
 ## Protocol flow

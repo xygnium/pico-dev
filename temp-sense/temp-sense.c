@@ -90,19 +90,125 @@ static void handle_format(const char *cmd, char *resp, size_t resp_size) {
     }
 }
 
-// `sensors` — the roster in enumeration order, which *is* the wire
-// sensor_id the v1.2 UDP protocol's DATA packets use as a 1-byte index
-// instead of the full 8-byte ROM code. The roster is fixed at boot (see
-// temp_store.h), so a receiver only needs to fetch this once per session,
-// before its first REQUEST, to build its id<->romcode table.
-static void handle_sensors(char *resp, size_t resp_size) {
+// `table` — the persistent sensor table (see label_store.h) in index
+// order, which *is* the wire sensor_id the v1.2 UDP protocol's DATA
+// packets use as a 1-byte index instead of the full 8-byte ROM code. The
+// index only changes on an explicit register/decomm/wipe, never as a side
+// effect of a boot's bus scan, so the collector fetches this once after
+// every such change (not once per session) to build its id<->label table.
+static void handle_table(char *resp, size_t resp_size) {
     size_t off = 0;
-    off += snprintf(resp + off, resp_size - off, "sensors: %d\n",
+    off += snprintf(resp + off, resp_size - off, "table: %d\n",
                      g_temp_num_devs);
     for (int i = 0; i < g_temp_num_devs && off < resp_size; i++) {
-        off += snprintf(resp + off, resp_size - off, "%d 0x%016llx\n", i,
-                         (unsigned long long)g_temp_romcode[i]);
+        char label[LABEL_STRING_LEN];
+        if (!label_store_lookup(g_temp_romcode[i], label, sizeof label)) {
+            snprintf(label, sizeof label, "%s", LABEL_PLACEHOLDER);
+        }
+        off += snprintf(resp + off, resp_size - off, "%d 0x%016llx %s\n", i,
+                         (unsigned long long)g_temp_romcode[i], label);
     }
+}
+
+// `pause` / `resume` — stop and restart the sample loop. Sampling never
+// stops on its own, so without this the ring's backlog can never reach
+// exactly zero (a new cycle always lands between an ACK and the operator's
+// next command) — `decomm`/`wipetable` need exactly zero, not just small,
+// since even one straggler record was written under the old sensor count.
+// The loop resumes from "now" rather than bursting through missed cycles
+// (see use_ds18b20.c).
+static void handle_pause(char *resp, size_t resp_size) {
+    g_temp_sampling_paused = true;
+
+    // sd_ring_sync() otherwise only runs at the end of a sample cycle
+    // (use_ds18b20.c), which the sampling loop now skips entirely while
+    // paused -- without this, the last cycle's writes stay unflushed and
+    // sd_ring_get() can't retrieve them, so the backlog can never reach the
+    // zero that decomm/wipetable require.
+    sd_ring_sync();
+
+    snprintf(resp, resp_size,
+             "pause: sampling stopped — let the collector finish a final "
+             "pull, then decomm/wipetable, then `resume`\n");
+}
+
+static void handle_resume(char *resp, size_t resp_size) {
+    g_temp_sampling_paused = false;
+    snprintf(resp, resp_size, "resume: sampling restarted\n");
+}
+
+// Shared precondition for `decomm`/`wipetable`: both change the table's
+// sensor count, and build_data_packet() (xfer_session.c) replays SD ring
+// history by fixed stride assuming a constant count across the whole
+// unconfirmed backlog — so the ring must be paused *and* fully drained
+// before either command may proceed, or older records get misread. Fills
+// `resp` and returns false if not ready.
+static bool roster_change_ready(const char *cmd_name, char *resp,
+                                 size_t resp_size) {
+    if (!g_temp_sampling_paused) {
+        snprintf(resp, resp_size,
+                 "%s: refused — run `pause` first (sampling must be "
+                 "stopped so the ring backlog can reach zero)\n", cmd_name);
+        return false;
+    }
+    if (sd_ring_confirmed_seq() + 1 != sd_ring_next_seq()) {
+        snprintf(resp, resp_size,
+                 "%s: refused — collector has not confirmed all readings "
+                 "yet; let it finish, then retry\n", cmd_name);
+        return false;
+    }
+    return true;
+}
+
+// `decomm <index>` — removes the probe at wire index <index> from the
+// table and compacts (see label_store_decomm()). Once compacted, the freed
+// index is whatever register_new() assigns to the next new sensor.
+static void handle_decomm(const char *cmd, char *resp, size_t resp_size) {
+    int idx = -1;
+    if (sscanf(cmd, "decomm %d", &idx) != 1) {
+        snprintf(resp, resp_size, "usage: decomm <index>\n");
+        return;
+    }
+    if (!roster_change_ready("decomm", resp, resp_size)) return;
+    if (idx < 0 || idx >= g_temp_num_devs) {
+        snprintf(resp, resp_size, "decomm: refused -- index must be 0..%d\n",
+                 g_temp_num_devs - 1);
+        return;
+    }
+    if (!label_store_decomm(idx)) {
+        snprintf(resp, resp_size, "decomm: failed — check the serial log\n");
+        return;
+    }
+    temp_store_sync_from_table();
+    snprintf(resp, resp_size,
+             "decomm: index %d removed, table now has %d sensor(s) — "
+             "re-run the collector's table download\n", idx, g_temp_num_devs);
+}
+
+// `wipetable yes-erase-sensor-table` — clears the whole sensor table
+// (labels.dat), distinct from `format` which erases the entire SD card.
+// Same pause+drained-backlog guard and rationale as `decomm`. Immediately
+// re-runs discovery so the device doesn't need a reboot to be usable
+// again.
+#define WIPETABLE_CONFIRM_CMD "wipetable yes-erase-sensor-table"
+
+static void handle_wipetable(const char *cmd, char *resp, size_t resp_size) {
+    if (strcmp(cmd, WIPETABLE_CONFIRM_CMD) != 0) {
+        snprintf(resp, resp_size,
+                 "wipetable: refused — this erases the whole sensor table. "
+                 "Send exactly \"%s\" to confirm.\n", WIPETABLE_CONFIRM_CMD);
+        return;
+    }
+    if (!roster_change_ready("wipetable", resp, resp_size)) return;
+    if (!label_store_wipe()) {
+        snprintf(resp, resp_size, "wipetable: failed — check the serial log\n");
+        return;
+    }
+    temp_store_rediscover();
+    snprintf(resp, resp_size,
+             "wipetable: table erased, rediscovered %d sensor(s) as \"%s\" — "
+             "re-run the collector's table download\n",
+             g_temp_num_devs, LABEL_PLACEHOLDER);
 }
 
 // `config get` / `config set <max_retries> <retry_interval_ms>` — the
@@ -137,7 +243,7 @@ static void handle_config(const char *cmd, char *resp, size_t resp_size) {
 }
 
 // `label <index> <string>` -- renames the location string for the probe
-// currently at wire index <index> (as reported by `sensors`), by resolving
+// currently at wire index <index> (as reported by `table`), by resolving
 // it to a romcode and updating labels.dat. Only renames an entry that
 // already exists -- label_store_register_new() is what creates one, at
 // boot, when a romcode is first seen on the bus (see label_store.h).
@@ -185,25 +291,6 @@ static void handle_label(const char *cmd, char *resp, size_t resp_size) {
     }
 }
 
-// `labels` -- dumps the full romcode->label table (labels.dat), independent
-// of what's currently connected -- unlike `sensors` (this boot's active
-// roster only), this also includes probes registered in a past boot that
-// aren't on the bus right now. The collector mirrors this locally, and is
-// expected to re-fetch it only once the operator says a sensor addition is
-// complete (see label_store.h).
-static void handle_labels(char *resp, size_t resp_size) {
-    size_t off = 0;
-    int n = label_store_count();
-    off += snprintf(resp + off, resp_size - off, "labels: %d\n", n);
-    for (int i = 0; i < n && off < resp_size; i++) {
-        uint64_t romcode;
-        char label[LABEL_STRING_LEN];
-        if (!label_store_get(i, &romcode, label, sizeof label)) continue;
-        off += snprintf(resp + off, resp_size - off, "0x%016llx %s\n",
-                         (unsigned long long)romcode, label);
-    }
-}
-
 // The v1.2 binary protocol (REQUEST/ACK/NACK in, DATA out) is routed by its
 // leading magic byte, checked before any ASCII comparison — XFER_MAGIC
 // (0xA5) falls outside printable ASCII, so there is no ambiguity either way.
@@ -222,10 +309,16 @@ static void handle_wifi_cmd(const char *cmd, size_t cmd_len, char *resp,
         handle_format(cmd, resp, resp_size);
     } else if (strcmp(cmd, "sd") == 0) {
         sd_ring_status(resp, resp_size);
-    } else if (strcmp(cmd, "sensors") == 0) {
-        handle_sensors(resp, resp_size);
-    } else if (strcmp(cmd, "labels") == 0) {
-        handle_labels(resp, resp_size);
+    } else if (strcmp(cmd, "table") == 0) {
+        handle_table(resp, resp_size);
+    } else if (strcmp(cmd, "pause") == 0) {
+        handle_pause(resp, resp_size);
+    } else if (strcmp(cmd, "resume") == 0) {
+        handle_resume(resp, resp_size);
+    } else if (strncmp(cmd, "decomm", 6) == 0) {
+        handle_decomm(cmd, resp, resp_size);
+    } else if (strncmp(cmd, "wipetable", 9) == 0) {
+        handle_wipetable(cmd, resp, resp_size);
     } else if (strncmp(cmd, "label", 5) == 0) {
         handle_label(cmd, resp, resp_size);
     } else if (strncmp(cmd, "config", 6) == 0) {

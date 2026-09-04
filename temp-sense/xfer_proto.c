@@ -95,8 +95,10 @@ size_t xfer_pack_set_header(uint8_t *out, uint32_t timestamp, uint8_t count) {
     return 5u;
 }
 
-size_t xfer_pack_set_entry(uint8_t *out, uint8_t sensor_id, int16_t temperature) {
+size_t xfer_pack_set_entry(uint8_t *out, uint8_t sensor_id, int16_t temperature,
+                            uint8_t valid) {
     out[0] = sensor_id;
     put_u16le(out + 1, (uint16_t)temperature);
-    return 3u;
+    out[3] = valid;
+    return 4u;
 }
