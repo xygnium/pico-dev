@@ -85,6 +85,21 @@ static uint8_t ow_crc8(uint8_t *data, int len) {
     return crc;
 }
 
+// A noisy/long bus can make ow_romsearch()'s bit-by-bit search converge on
+// an address no physical device ever presented, without tripping the
+// search's own during-scan error check (that only catches one specific
+// glitch shape, not this one). Every real DS18B20 ROM code carries its own
+// defense: a family code (byte 0, always 0x28) and a CRC-8 over the other
+// seven bytes (byte 7) -- the same check already used for scratchpad reads,
+// applied here to reject a phantom romcode before it gets auto-registered.
+static bool ow_romcode_valid(uint64_t romcode) {
+    uint8_t bytes[8];
+    for (int i = 0; i < 8; i++) {
+        bytes[i] = (uint8_t)(romcode >> (8 * i));
+    }
+    return bytes[0] == DS18B20_FAMILY_CODE && ow_crc8(bytes, 7) == bytes[7];
+}
+
 #define DS3231_I2C_PORT i2c0
 #define DS3231_I2C_SDA_PIN 8
 #define DS3231_I2C_SCL_PIN 9
@@ -137,6 +152,19 @@ int example_ds18b20() {
     const int maxdevs = 20;
     uint64_t romcode[maxdevs];
     int num_devs = ow_romsearch(&ow, romcode, maxdevs, OW_SEARCH_ROM);
+
+    // Discard any phantom address before it's printed or registered -- see
+    // ow_romcode_valid() above.
+    int valid_devs = 0;
+    for (int i = 0; i < num_devs; i++) {
+        if (ow_romcode_valid(romcode[i])) {
+            romcode[valid_devs++] = romcode[i];
+        } else {
+            printf("\t(discarding invalid romcode 0x%016llx -- not a real "
+                   "DS18B20 address)\n", romcode[i]);
+        }
+    }
+    num_devs = valid_devs;
 
     printf("Found %d DS18B20 device(s)\n", num_devs);
     for (int i = 0; i < num_devs; i += 1) {
