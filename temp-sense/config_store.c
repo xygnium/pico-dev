@@ -11,20 +11,22 @@
 #define CONFIG_PATH "config.dat"
 
 #define CONFIG_MAGIC   0x31435354u  // "TSC1"
-#define CONFIG_VERSION 1u
+#define CONFIG_VERSION 2u  // 2: added sample_interval_ms
 
 typedef struct {
     uint32_t magic;
     uint32_t version;
     uint32_t max_retries;
     uint32_t retry_interval_ms;
-    uint32_t crc32;  // over bytes [0, 16)
+    uint32_t sample_interval_ms;
+    uint32_t crc32;  // over bytes [0, 20)
 } config_t;
 
-_Static_assert(sizeof(config_t) == 20, "config_t must be 20 bytes");
+_Static_assert(sizeof(config_t) == 24, "config_t must be 24 bytes");
 
-static uint32_t s_max_retries       = CONFIG_DEFAULT_MAX_RETRIES;
-static uint32_t s_retry_interval_ms = CONFIG_DEFAULT_RETRY_INTERVAL_MS;
+static uint32_t s_max_retries        = CONFIG_DEFAULT_MAX_RETRIES;
+static uint32_t s_retry_interval_ms  = CONFIG_DEFAULT_RETRY_INTERVAL_MS;
+static uint32_t s_sample_interval_ms = CONFIG_DEFAULT_SAMPLE_INTERVAL_MS;
 
 static bool config_load(config_t *out) {
     FIL f;
@@ -42,11 +44,12 @@ static bool config_load(config_t *out) {
 static bool config_save(void) {
     config_t c;
     memset(&c, 0, sizeof c);
-    c.magic             = CONFIG_MAGIC;
-    c.version           = CONFIG_VERSION;
-    c.max_retries       = s_max_retries;
-    c.retry_interval_ms = s_retry_interval_ms;
-    c.crc32             = crc32_of(&c, offsetof(config_t, crc32));
+    c.magic               = CONFIG_MAGIC;
+    c.version             = CONFIG_VERSION;
+    c.max_retries         = s_max_retries;
+    c.retry_interval_ms   = s_retry_interval_ms;
+    c.sample_interval_ms  = s_sample_interval_ms;
+    c.crc32               = crc32_of(&c, offsetof(config_t, crc32));
 
     FIL f;
     UINT bw = 0;
@@ -64,6 +67,7 @@ bool config_store_init(void) {
     if (!config_load(&c)) return false;
     s_max_retries = c.max_retries;
     s_retry_interval_ms = c.retry_interval_ms;
+    s_sample_interval_ms = c.sample_interval_ms;
     return true;
 }
 
@@ -73,6 +77,10 @@ uint32_t config_store_max_retries(void) {
 
 uint32_t config_store_retry_interval_ms(void) {
     return s_retry_interval_ms;
+}
+
+uint32_t config_store_sample_interval_ms(void) {
+    return s_sample_interval_ms;
 }
 
 bool config_store_set(uint32_t max_retries, uint32_t retry_interval_ms) {
@@ -91,6 +99,22 @@ bool config_store_set(uint32_t max_retries, uint32_t retry_interval_ms) {
     if (!config_save()) {
         s_max_retries = prev_retries;
         s_retry_interval_ms = prev_interval;
+        return false;
+    }
+    return true;
+}
+
+bool config_store_set_sample_interval_ms(uint32_t sample_interval_ms) {
+    if (sample_interval_ms < CONFIG_MIN_SAMPLE_INTERVAL_MS ||
+        sample_interval_ms > CONFIG_MAX_SAMPLE_INTERVAL_MS) {
+        return false;
+    }
+    if (!sd_ring_available()) return false;
+
+    uint32_t prev = s_sample_interval_ms;
+    s_sample_interval_ms = sample_interval_ms;
+    if (!config_save()) {
+        s_sample_interval_ms = prev;
         return false;
     }
     return true;

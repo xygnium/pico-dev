@@ -52,10 +52,15 @@ automatically as part of a normal pull.
 
 ## Sample rate & retention
 
-`TEMP_SAMPLE_INTERVAL_MS` in `use_ds18b20.c` (currently 5000ms) sets how
-often every sensor is read. It's a **compile-time constant** — changing it
-means a firmware rebuild and reflash, not a runtime command like `config
-set`.
+`config sample <ms>` sets how often every sensor is read (default 5000ms,
+bounds 1000–3600000ms). It's a runtime command, but the sampling loop only
+reads it once, before it starts — so **a change takes effect on the next
+reboot, not live**. Set it, then power-cycle or reflash to apply it.
+`config get`'s `sample_interval_ms=...` reports the *stored* value (updated
+immediately by `config sample`) — not necessarily what the currently-running
+loop is actually doing, which stays at whatever it read at its last boot
+until you reboot again. There's no in-band way to query the live cadence;
+watch the timestamp spacing between reads if you need to confirm it.
 
 The SD ring holds a fixed 2,097,152 records total, shared across all active
 sensors — one sampling round ("set") uses `N_sensors` of them. So retention
@@ -137,8 +142,9 @@ Steps:
 |---|---|
 | `table` | The persistent sensor table: index, romcode, label for every registered probe (including one not currently on the bus — its readings show as invalid rather than disappearing). |
 | `label <index> <string>` | Rename the probe at table index `<index>` (must already have a `labels.dat` entry — auto-created at boot). |
-| `config get` | Show the receiver's retry policy (`max_retries`, `retry_interval_ms`) that `collector.py` reads at session start. |
-| `config set <max_retries> <retry_interval_ms>` | Update that policy. Bounds: retries 1–255, interval 100–600000ms. Defaults: 5 / 5000ms. |
+| `config get` | Show the receiver's retry policy (`max_retries`, `retry_interval_ms`) that `collector.py` reads at session start, plus the *currently-running* `sample_interval_ms`. |
+| `config set <max_retries> <retry_interval_ms>` | Update the retry policy. Bounds: retries 1–255, interval 100–600000ms. Defaults: 5 / 5000ms. |
+| `config sample <ms>` | Set the sampling interval for the next reboot (see "Sample rate & retention" above — **not live**). Bounds: 1000–3600000ms. Default: 5000ms. |
 | `settime YYYY-MM-DD HH:MM:SS D` | Set the RTC. `D` is day-of-week, 1=Monday. Send **UTC** — `udp_client.py settime` (no args) does this for you from your host clock. |
 | `sd` | Ring buffer status: capacity, records stored, seq range, confirmed watermark, backlog. |
 | `read` | Most recent reading, for a quick manual check. |

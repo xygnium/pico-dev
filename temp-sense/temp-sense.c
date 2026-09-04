@@ -116,6 +116,11 @@ static void handle_table(char *resp, size_t resp_size) {
 // v1.2 protocol's receiver-side retry policy. The device only stores this;
 // it never times anything out itself (see xfer_proto.h). A receiver reads
 // it once at session start and drives its own retry loop.
+//
+// `config sample <ms>` — the DS18B20 sampling interval. Unlike the retry
+// policy, this is read by example_ds18b20() only once, before its loop
+// starts, so a change here takes effect on the *next reboot*, not live —
+// deliberately, see config_store.h.
 static void handle_config(const char *cmd, char *resp, size_t resp_size) {
     unsigned long retries_arg = 0, interval_arg = 0;
     int n = sscanf(cmd, "config set %lu %lu", &retries_arg, &interval_arg);
@@ -132,15 +137,32 @@ static void handle_config(const char *cmd, char *resp, size_t resp_size) {
         }
         return;
     }
+    unsigned long sample_arg = 0;
+    if (sscanf(cmd, "config sample %lu", &sample_arg) == 1) {
+        if (config_store_set_sample_interval_ms((uint32_t)sample_arg)) {
+            snprintf(resp, resp_size,
+                     "config: set sample_interval_ms=%lu — takes effect on "
+                     "next reboot\n", sample_arg);
+        } else {
+            snprintf(resp, resp_size,
+                     "config: refused — sample_interval_ms must be %u..%u "
+                     "(or sd unavailable)\n",
+                     CONFIG_MIN_SAMPLE_INTERVAL_MS, CONFIG_MAX_SAMPLE_INTERVAL_MS);
+        }
+        return;
+    }
     if (strcmp(cmd, "config get") == 0) {
         snprintf(resp, resp_size,
-                 "config: max_retries=%lu retry_interval_ms=%lu\n",
+                 "config: max_retries=%lu retry_interval_ms=%lu "
+                 "sample_interval_ms=%lu\n",
                  (unsigned long)config_store_max_retries(),
-                 (unsigned long)config_store_retry_interval_ms());
+                 (unsigned long)config_store_retry_interval_ms(),
+                 (unsigned long)config_store_sample_interval_ms());
         return;
     }
     snprintf(resp, resp_size,
-             "usage: config get | config set <max_retries> <retry_interval_ms>\n");
+             "usage: config get | config set <max_retries> <retry_interval_ms> "
+             "| config sample <ms>\n");
 }
 
 // `label <index> <string>` -- renames the location string for the probe

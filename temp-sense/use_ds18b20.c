@@ -23,6 +23,7 @@
 #include "temp_store.h"
 #include "sd_ring.h"
 #include "label_store.h"
+#include "config_store.h"
 
 // Modify these definitions as required, to match connections.
 #define ONEWIRE_GPIO_PIN 15
@@ -33,9 +34,13 @@
 // poll point waited nearly a full cycle to be answered — measured on hardware
 // as a bimodal 0.6s / 5.9s response depending only on when the packet landed.
 // Sample rate and command latency are unrelated concerns, and coupling them
-// means every future increase to the sample interval (30s is planned — see
-// CLAUDE.md, "Deferred") would degrade responsiveness by the same factor.
-#define TEMP_SAMPLE_INTERVAL_MS 5000  // sensor cadence; the one knob to change
+// means every future increase to the sample interval would degrade
+// responsiveness by the same factor.
+//
+// The sensor cadence itself is config_store_sample_interval_ms() (see
+// config_store.h), read once below before the sampling loop starts — not a
+// compile-time constant here anymore. `config sample <ms>` is the runtime
+// knob; it takes effect on the next reboot, not live.
 #define NET_POLL_INTERVAL_MS      50  // bounds worst-case UDP command latency
 #define DS18B20_CONVERT_MS       800  // 12-bit conversion time, per datasheet
 
@@ -187,6 +192,12 @@ int example_ds18b20() {
     // loop below) rather than disappearing until the next reboot.
     temp_store_sync_from_table();
 
+    // Read once, here, before the loop starts -- see the comment on
+    // NET_POLL_INTERVAL_MS above for why `config sample` only takes effect
+    // on the next reboot rather than live.
+    uint32_t sample_interval_ms = config_store_sample_interval_ms();
+    printf("temp: sample_interval_ms=%lu\n", (unsigned long)sample_interval_ms);
+
     // Anchors the sample schedule. Deadlines are advanced from the previous
     // deadline rather than from "now", so conversion and read time do not
     // accumulate into the cadence — the old loop slept 5000ms *after* ~900ms
@@ -278,13 +289,13 @@ int example_ds18b20() {
         // is the simple, correct baseline.
         sd_ring_sync();
 
-        next_sample = delayed_by_ms(next_sample, TEMP_SAMPLE_INTERVAL_MS);
+        next_sample = delayed_by_ms(next_sample, sample_interval_ms);
         if (time_reached(next_sample)) {
             // The cycle overran its own interval (a slow SD sync, or a sample
             // interval set shorter than the conversion time). Resynchronise
             // rather than firing back-to-back catch-up samples, which would
             // burst-fill the ring trying to make up time it can never recover.
-            next_sample = make_timeout_time_ms(TEMP_SAMPLE_INTERVAL_MS);
+            next_sample = make_timeout_time_ms(sample_interval_ms);
         }
 
         // Idle until the next sample is due — still answering commands and
