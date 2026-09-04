@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "pico/stdlib.h"
+#include "hardware/watchdog.h"
 
 #include "wifi.h"
 #include "wifi_secrets.h"
@@ -88,6 +89,21 @@ static void handle_format(const char *cmd, char *resp, size_t resp_size) {
     } else {
         snprintf(resp, resp_size, "sd: format failed — check the serial log\n");
     }
+}
+
+// `reboot` — mainly for `config sample`, which only takes effect on the
+// next boot (see config_store.h). No confirmation token needed: unlike
+// `format`, nothing is destroyed -- the ring/config/label tables are all on
+// SD and survive a reboot untouched, so the worst case is a brief gap in
+// sampling. watchdog_reboot()'s delay (rather than rebooting inline) lets
+// the response actually reach the network before the reset happens -- the
+// UDP send here is only queued, not yet flushed over WiFi, when this
+// function returns.
+#define REBOOT_DELAY_MS 500u
+
+static void handle_reboot(char *resp, size_t resp_size) {
+    snprintf(resp, resp_size, "rebooting in %ums\n", REBOOT_DELAY_MS);
+    watchdog_reboot(0, 0, REBOOT_DELAY_MS);
 }
 
 // `table` — the persistent sensor table (see label_store.h) in index
@@ -238,6 +254,8 @@ static void handle_wifi_cmd(const char *cmd, size_t cmd_len, char *resp,
         handle_label(cmd, resp, resp_size);
     } else if (strncmp(cmd, "config", 6) == 0) {
         handle_config(cmd, resp, resp_size);
+    } else if (strcmp(cmd, "reboot") == 0) {
+        handle_reboot(resp, resp_size);
     } else if (strcmp(cmd, "read") == 0) {
         if (temp_ring_next_seq() == 0) {
             snprintf(resp, resp_size, "no readings yet\n");

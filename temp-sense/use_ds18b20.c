@@ -282,6 +282,7 @@ int example_ds18b20() {
                        present ? "CRC error" : "no response");
             }
         }
+        printf("\n");
 
         // Once per sensor cycle, per sd_ring_sync()'s contract — tied to the
         // sample timer, not the network tick. Syncing more often than a sector

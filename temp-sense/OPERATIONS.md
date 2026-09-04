@@ -55,7 +55,7 @@ automatically as part of a normal pull.
 `config sample <ms>` sets how often every sensor is read (default 5000ms,
 bounds 1000–3600000ms). It's a runtime command, but the sampling loop only
 reads it once, before it starts — so **a change takes effect on the next
-reboot, not live**. Set it, then power-cycle or reflash to apply it.
+reboot, not live**. Set it, then send `reboot` (or power-cycle/reflash) to apply it.
 `config get`'s `sample_interval_ms=...` reports the *stored* value (updated
 immediately by `config sample`) — not necessarily what the currently-running
 loop is actually doing, which stays at whatever it read at its last boot
@@ -149,6 +149,7 @@ Steps:
 | `sd` | Ring buffer status: capacity, records stored, seq range, confirmed watermark, backlog. |
 | `read` | Most recent reading, for a quick manual check. |
 | `format` | **Destroys everything on the SD card** — the ring, `config.dat`, and `labels.dat` alike, since it's a full card reformat, not a per-file delete. Requires the exact confirmation token; `udp_client.py format` prompts before sending it. |
+| `reboot` | Restart the device (e.g. to apply a `config sample` change). Nothing is destroyed — the ring/config/label tables are all on SD and survive untouched — so no confirmation token is needed. |
 
 ## Troubleshooting
 

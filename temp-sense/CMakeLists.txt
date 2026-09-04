@@ -32,6 +32,7 @@ target_link_libraries(temp-sense
     pico_stdlib
     hardware_i2c
     hardware_pio
+    hardware_watchdog
     onewire_library
     picowifi
     FatFs_SPI
