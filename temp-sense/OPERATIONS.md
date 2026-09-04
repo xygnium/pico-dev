@@ -106,17 +106,28 @@ and test each before adding the next:
    run `./collector.py --table` once to refresh `sensor_table.csv` with
    the finished roster.
 
-## If a sensor goes bad
+## Full reset (wiping the logger)
 
-There is no in-place removal — rebuild the whole table from scratch:
+There is no in-place removal of a single bad sensor, and no partial-wipe
+command — `format` always erases everything on the SD card together (the
+ring, `config.dat`, and `labels.dat` alike, since it's a full card
+reformat, not a per-file delete). So a full reset is the only reset there
+is; use this procedure whenever you need one, for example:
+
+- **A sensor has gone bad** and needs to drop off the roster (no in-place
+  removal exists — this is the only way to retire one).
+- **Starting the logger over from scratch** — a new deployment, a card
+  swap, or discarding accumulated history entirely.
+
+Steps:
 
 1. **Stop the logger** and the collector cron/timer.
-2. `format` (destroys the ring and the sensor table together — see the
-   command reference below). Any unconfirmed readings are lost; that's
-   accepted as part of this rebuild.
-3. Reattach only the probes that are still good, then reboot so the
-   boot-time scan registers them fresh (see "Adding a new sensor" above
-   for naming each one).
+2. `format` (see the command reference below). Any unconfirmed readings
+   are lost; that's accepted as part of a full reset.
+3. Reattach only the probes that should be on the new roster (all of them,
+   for a fresh start; only the good ones, if retiring a bad sensor), then
+   reboot so the boot-time scan registers them fresh (see "Adding a new
+   sensor" above for naming each one).
 4. **Restart the collector cron/timer**, and run `./collector.py --table`
    once to refresh `sensor_table.csv` with the new roster.
 
@@ -146,3 +157,13 @@ There is no in-place removal — rebuild the whole table from scratch:
   down long enough to threaten wraparound (permanent data loss for the
   oldest unconfirmed records), get it running again soon — this protocol
   does not signal wraparound in-band.
+- **CRC errors on reads, worse with more sensors/longer wire** — before
+  suspecting the pull-up value, check the bus *topology*. Mixing a very
+  short stub (e.g. a sensor 20mm from the logger) with long branches
+  (e.g. others 6+ meters out) on the same trunk causes impedance-mismatch
+  reflections at the near tap that corrupt the bus's fast edges for every
+  sensor, not just the close one — confirmed on this hardware: removing
+  the near sensors eliminated the CRC errors on the far ones, while
+  pull-up changes (2.2K, then 1K) had not. Prefer a single consistent run
+  length (avoid very short stubs on a bus that also has long branches)
+  over further pull-up tuning if errors persist across a stronger pull-up.
