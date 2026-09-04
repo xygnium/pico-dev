@@ -19,14 +19,12 @@ device only advances its watermark on a confirmed final ACK, and rows are
 deduped here by (label, timestamp), so re-pulled data is a no-op.
 
 The wire sensor_id is only a transport-layer shorthand -- it exists to keep
-DATA packets compact, and its only stability guarantee is "constant for the
-life of any unconfirmed backlog on the device" (see label_store.h and
-OPERATIONS.md's decomm/wipetable workflow). This script resolves it to the
-device's current label immediately, from sensor_table.csv, and stores rows
-by label rather than by index -- run --table by hand once after any
-add/decomm/wipetable roster change (it is never fetched automatically as
-part of a normal pull), and a normal pull refuses to run if sensor_table.csv
-doesn't exist yet.
+DATA packets compact and carries no identity of its own (see
+label_store.h). This script resolves it to the device's current label
+immediately, from sensor_table.csv, and stores rows by label rather than by
+index -- run --table by hand once after adding a sensor (it is never
+fetched automatically as part of a normal pull), and a normal pull refuses
+to run if sensor_table.csv doesn't exist yet.
 
 Note: a temp_data.csv written by an older version of this script is keyed
 by raw sensor_id, not label, and its `valid` column doesn't exist -- it
@@ -121,7 +119,7 @@ def parse_data_packet(buf):
 def fetch_table(sock, addr):
     """`table` -> [(index, romcode_str, label), ...], the device's current
     persistent sensor table -- index is stable across reboots (only an
-    explicit register/decomm/wipe changes it, see label_store.h). For the
+    explicit registration changes it, see label_store.h). For the
     operator-triggered --table refresh, not the normal pull path."""
     sock.settimeout(SETUP_TIMEOUT)
     sock.sendto(b"table", addr)
@@ -311,9 +309,8 @@ def main():
                      help="fetch the device's current persistent sensor "
                           "table into --table-file and exit, instead of "
                           "pulling readings. Run this by hand once after "
-                          "any add/decomm/wipetable roster change (see "
-                          "label_store.h) -- it is never done as part of "
-                          "a normal pull.")
+                          "adding a sensor (see label_store.h) -- it is "
+                          "never done as part of a normal pull.")
     ap.add_argument("--table-file", default="sensor_table.csv",
                      help="output/input path for the sensor table "
                           "(default %(default)s)")

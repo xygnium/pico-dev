@@ -136,34 +136,3 @@ bool label_store_lookup(uint64_t romcode, char *out, size_t out_size) {
     }
     return false;
 }
-
-bool label_store_decomm(int index) {
-    if (!sd_ring_available()) return false;
-    if (index < 0 || (uint32_t)index >= s_table.count) return false;
-
-    label_table_t prev = s_table;
-
-    for (uint32_t j = (uint32_t)index; j + 1 < s_table.count; j++) {
-        s_table.entries[j] = s_table.entries[j + 1];
-    }
-    s_table.count--;
-
-    if (!label_save()) {
-        s_table = prev;
-        return false;
-    }
-    return true;
-}
-
-bool label_store_wipe(void) {
-    if (!sd_ring_available()) return false;
-
-    label_table_t prev = s_table;
-    s_table.count = 0;
-
-    if (!label_save()) {
-        s_table = prev;
-        return false;
-    }
-    return true;
-}

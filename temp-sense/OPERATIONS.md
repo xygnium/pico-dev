@@ -46,9 +46,9 @@ A normal pull refuses to run if `sensor_table.csv` doesn't exist yet — see
 
 This fetches the device's current persistent sensor table (index, romcode,
 label) into `sensor_table.csv` and exits — it does not pull readings. Run
-it once before your first pull, and again after any `label`, `decomm`, or
-`wipetable` change (see "Adding a new sensor" and "Removing/replacing a
-sensor" below); it's never fetched automatically as part of a normal pull.
+it once before your first pull, and again after adding a sensor or
+relabeling one (see "Adding a new sensor" below); it's never fetched
+automatically as part of a normal pull.
 
 ## Sample rate & retention
 
@@ -82,9 +82,9 @@ extended stretch (e.g. an extended remote deployment between site visits).
 ## Adding a new sensor
 
 A sensor's index in the persistent table is stable across reboots — it
-only changes on an explicit register/decomm/wipe, never as a side effect
-of which probes happen to answer a boot's bus scan. Add sensors **one at a
-time**, and test each before adding the next:
+only changes on an explicit registration, never as a side effect of which
+probes happen to answer a boot's bus scan. Add sensors **one at a time**,
+and test each before adding the next:
 
 1. **Stop the collector cron/timer** for the duration of this process —
    the sensor roster is in flux and pulled data shouldn't be trusted until
@@ -106,37 +106,19 @@ time**, and test each before adding the next:
    run `./collector.py --table` once to refresh `sensor_table.csv` with
    the finished roster.
 
-## Removing/replacing a sensor
+## If a sensor goes bad
 
-`decomm` removes a table entry and **compacts** the table — every later
-index shifts down by one, and that freed slot is whatever the next new
-registration gets. This is the normal way to retire a broken sensor or
-swap it for a new one at the same physical location. Because the SD ring
-replays history assuming a constant sensor count across any unconfirmed
-backlog, `decomm` (and the table wipe below) require the ring to be fully
-drained first:
+There is no in-place removal — rebuild the whole table from scratch:
 
-1. **Stop the collector cron/timer.**
-2. `pause` — stops sampling. The ring's backlog can only ever reach exactly
-   zero once sampling has actually stopped; otherwise a new reading always
-   lands between the collector's last ACK and your next command.
-3. Run `./collector.py` one more time to drain whatever backlog remains.
-   Check `sd` — you need `confirmed` to equal `seq`'s upper bound (backlog
-   of 1). If it isn't quite there yet, just rerun the collector; no new
-   readings are being generated while paused, so it will finish.
-4. `decomm <index>` (found via `table`). Refused if not paused, or if the
-   ring still has backlog.
-5. `resume` — restarts sampling immediately, without trying to catch up on
-   the paused interval.
-6. **Restart the collector cron/timer**, and run `./collector.py --table`
-   once to refresh `sensor_table.csv` — the freed index will be reused by
-   whatever sensor is registered next, so don't skip this.
-
-`wipetable yes-erase-sensor-table` clears the *entire* table (distinct from
-`format`, which erases the whole SD card) and immediately re-scans the bus
-to repopulate it from scratch — useful for starting a location scheme over.
-Same pause/drain precondition and `udp_client.py` confirmation-prompt
-pattern as `format`.
+1. **Stop the logger** and the collector cron/timer.
+2. `format` (destroys the ring and the sensor table together — see the
+   command reference below). Any unconfirmed readings are lost; that's
+   accepted as part of this rebuild.
+3. Reattach only the probes that are still good, then reboot so the
+   boot-time scan registers them fresh (see "Adding a new sensor" above
+   for naming each one).
+4. **Restart the collector cron/timer**, and run `./collector.py --table`
+   once to refresh `sensor_table.csv` with the new roster.
 
 ## Command reference
 
@@ -144,10 +126,6 @@ pattern as `format`.
 |---|---|
 | `table` | The persistent sensor table: index, romcode, label for every registered probe (including one not currently on the bus — its readings show as invalid rather than disappearing). |
 | `label <index> <string>` | Rename the probe at table index `<index>` (must already have a `labels.dat` entry — auto-created at boot). |
-| `pause` | Stop the sample loop. Required before `decomm`/`wipetable`, and before the ring backlog can reach exactly zero. |
-| `resume` | Restart the sample loop, from now (no catch-up burst for the paused interval). |
-| `decomm <index>` | Remove that table entry and compact — later indices shift down. Refused unless paused with a fully drained ring backlog. |
-| `wipetable yes-erase-sensor-table` | **Erases the whole sensor table** and immediately re-scans the bus to repopulate it. Distinct from `format`. Same pause/drain precondition; requires the exact confirmation token (`udp_client.py wipetable` prompts before sending it). |
 | `config get` | Show the receiver's retry policy (`max_retries`, `retry_interval_ms`) that `collector.py` reads at session start. |
 | `config set <max_retries> <retry_interval_ms>` | Update that policy. Bounds: retries 1–255, interval 100–600000ms. Defaults: 5 / 5000ms. |
 | `settime YYYY-MM-DD HH:MM:SS D` | Set the RTC. `D` is day-of-week, 1=Monday. Send **UTC** — `udp_client.py settime` (no args) does this for you from your host clock. |

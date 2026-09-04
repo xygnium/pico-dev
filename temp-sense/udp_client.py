@@ -76,15 +76,6 @@ def main():
             raise SystemExit("format cancelled")
         cmd = "format yes-erase-the-card"
 
-    # `wipetable` erases the whole sensor table -- same prompt-here-too
-    # pattern as `format`, one level down (labels.dat, not the whole card).
-    if cmd.strip() == "wipetable":
-        confirm = input(
-            "This erases the whole sensor table. Type 'yes' to confirm: ")
-        if confirm.strip().lower() != "yes":
-            raise SystemExit("wipetable cancelled")
-        cmd = "wipetable yes-erase-sensor-table"
-
     print("cmd=", cmd)
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)

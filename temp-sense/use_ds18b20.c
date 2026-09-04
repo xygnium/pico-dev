@@ -41,14 +41,6 @@
 
 int g_temp_num_devs = 0;
 uint64_t g_temp_romcode[TEMP_STORE_MAX_DEVICES];
-bool g_temp_sampling_paused = false;
-
-// Mirrors the OW handle set up once in example_ds18b20() -- a plain value
-// struct (pio/sm/offset/gpio, see onewire_library.h), safe to copy -- so
-// temp_store_rediscover() can drive a bus scan after boot without needing
-// its own PIO state machine.
-static OW s_ow;
-static bool s_ow_ready = false;
 
 void temp_store_sync_from_table(void) {
     int count = label_store_count();
@@ -58,15 +50,6 @@ void temp_store_sync_from_table(void) {
         label_store_get(i, &g_temp_romcode[i], label, sizeof label);
     }
     g_temp_num_devs = count;
-}
-
-void temp_store_rediscover(void) {
-    if (!s_ow_ready) return;
-    uint64_t romcode[TEMP_STORE_MAX_DEVICES];
-    int num_devs = ow_romsearch(&s_ow, romcode, TEMP_STORE_MAX_DEVICES,
-                                 OW_SEARCH_ROM);
-    label_store_register_new(romcode, num_devs);
-    temp_store_sync_from_table();
 }
 
 // Service the network until `deadline`. Used for both the DS18B20 conversion
@@ -150,9 +133,6 @@ int example_ds18b20() {
         puts("could not initialise the onewire driver");
         return -1;
     }
-    s_ow = ow;
-    s_ow_ready = true;
-
     // find and display 64-bit device addresses
     const int maxdevs = 20;
     uint64_t romcode[maxdevs];
@@ -185,29 +165,7 @@ int example_ds18b20() {
     // of work, giving a real period of ~5.9s rather than the nominal 5s.
     absolute_time_t next_sample = get_absolute_time();
 
-    // Tracks whether the *previous* iteration was idle, so sampling resumes
-    // from "now" (not a stale deadline) the moment it's no longer idle,
-    // instead of bursting through cycles missed while paused/empty.
-    bool was_idle = true;
-
-    // Runs forever (not "while there are devices") so `pause`/`resume` and
-    // other commands stay reachable even with an empty table — main()'s
-    // only other option after this returns is a dead `for (;;);` with no
-    // network servicing at all.
-    for (;;) {
-        // g_temp_num_devs and g_temp_sampling_paused are re-read every
-        // iteration (not cached) since commands handled between cycles
-        // change them.
-        if (g_temp_sampling_paused || g_temp_num_devs == 0) {
-            was_idle = true;
-            net_poll_until(make_timeout_time_ms(100));
-            continue;
-        }
-        if (was_idle) {
-            next_sample = get_absolute_time();
-            was_idle = false;
-        }
-
+    while (g_temp_num_devs > 0) {
         // start temperature conversion in parallel on all devices
         // (see ds18b20 datasheet)
         ow_reset(&ow);
@@ -233,7 +191,8 @@ int example_ds18b20() {
         // read the result from each device on the persistent table's
         // roster -- including one not found in this boot's search above,
         // whose ow_reset() presence check below will just come back false
-        // every cycle until it's reconnected or decommissioned.
+        // every cycle until it's reconnected (or the table is rebuilt via
+        // `format` and a reboot).
         for (int i = 0; i < g_temp_num_devs; i += 1) {
             uint64_t target = g_temp_romcode[i];
             bool present = ow_reset(&ow);

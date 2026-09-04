@@ -93,9 +93,11 @@ static void handle_format(const char *cmd, char *resp, size_t resp_size) {
 // `table` — the persistent sensor table (see label_store.h) in index
 // order, which *is* the wire sensor_id the v1.2 UDP protocol's DATA
 // packets use as a 1-byte index instead of the full 8-byte ROM code. The
-// index only changes on an explicit register/decomm/wipe, never as a side
-// effect of a boot's bus scan, so the collector fetches this once after
-// every such change (not once per session) to build its id<->label table.
+// index only changes on an explicit registration, never as a side effect
+// of a boot's bus scan, so the collector fetches this once after adding a
+// sensor (not once per session) to build its id<->label table. If a sensor
+// goes bad, there is no in-place removal -- run `format` and rebuild the
+// table from scratch (see OPERATIONS.md).
 static void handle_table(char *resp, size_t resp_size) {
     size_t off = 0;
     off += snprintf(resp + off, resp_size - off, "table: %d\n",
@@ -108,107 +110,6 @@ static void handle_table(char *resp, size_t resp_size) {
         off += snprintf(resp + off, resp_size - off, "%d 0x%016llx %s\n", i,
                          (unsigned long long)g_temp_romcode[i], label);
     }
-}
-
-// `pause` / `resume` — stop and restart the sample loop. Sampling never
-// stops on its own, so without this the ring's backlog can never reach
-// exactly zero (a new cycle always lands between an ACK and the operator's
-// next command) — `decomm`/`wipetable` need exactly zero, not just small,
-// since even one straggler record was written under the old sensor count.
-// The loop resumes from "now" rather than bursting through missed cycles
-// (see use_ds18b20.c).
-static void handle_pause(char *resp, size_t resp_size) {
-    g_temp_sampling_paused = true;
-
-    // sd_ring_sync() otherwise only runs at the end of a sample cycle
-    // (use_ds18b20.c), which the sampling loop now skips entirely while
-    // paused -- without this, the last cycle's writes stay unflushed and
-    // sd_ring_get() can't retrieve them, so the backlog can never reach the
-    // zero that decomm/wipetable require.
-    sd_ring_sync();
-
-    snprintf(resp, resp_size,
-             "pause: sampling stopped — let the collector finish a final "
-             "pull, then decomm/wipetable, then `resume`\n");
-}
-
-static void handle_resume(char *resp, size_t resp_size) {
-    g_temp_sampling_paused = false;
-    snprintf(resp, resp_size, "resume: sampling restarted\n");
-}
-
-// Shared precondition for `decomm`/`wipetable`: both change the table's
-// sensor count, and build_data_packet() (xfer_session.c) replays SD ring
-// history by fixed stride assuming a constant count across the whole
-// unconfirmed backlog — so the ring must be paused *and* fully drained
-// before either command may proceed, or older records get misread. Fills
-// `resp` and returns false if not ready.
-static bool roster_change_ready(const char *cmd_name, char *resp,
-                                 size_t resp_size) {
-    if (!g_temp_sampling_paused) {
-        snprintf(resp, resp_size,
-                 "%s: refused — run `pause` first (sampling must be "
-                 "stopped so the ring backlog can reach zero)\n", cmd_name);
-        return false;
-    }
-    if (sd_ring_confirmed_seq() + 1 != sd_ring_next_seq()) {
-        snprintf(resp, resp_size,
-                 "%s: refused — collector has not confirmed all readings "
-                 "yet; let it finish, then retry\n", cmd_name);
-        return false;
-    }
-    return true;
-}
-
-// `decomm <index>` — removes the probe at wire index <index> from the
-// table and compacts (see label_store_decomm()). Once compacted, the freed
-// index is whatever register_new() assigns to the next new sensor.
-static void handle_decomm(const char *cmd, char *resp, size_t resp_size) {
-    int idx = -1;
-    if (sscanf(cmd, "decomm %d", &idx) != 1) {
-        snprintf(resp, resp_size, "usage: decomm <index>\n");
-        return;
-    }
-    if (!roster_change_ready("decomm", resp, resp_size)) return;
-    if (idx < 0 || idx >= g_temp_num_devs) {
-        snprintf(resp, resp_size, "decomm: refused -- index must be 0..%d\n",
-                 g_temp_num_devs - 1);
-        return;
-    }
-    if (!label_store_decomm(idx)) {
-        snprintf(resp, resp_size, "decomm: failed — check the serial log\n");
-        return;
-    }
-    temp_store_sync_from_table();
-    snprintf(resp, resp_size,
-             "decomm: index %d removed, table now has %d sensor(s) — "
-             "re-run the collector's table download\n", idx, g_temp_num_devs);
-}
-
-// `wipetable yes-erase-sensor-table` — clears the whole sensor table
-// (labels.dat), distinct from `format` which erases the entire SD card.
-// Same pause+drained-backlog guard and rationale as `decomm`. Immediately
-// re-runs discovery so the device doesn't need a reboot to be usable
-// again.
-#define WIPETABLE_CONFIRM_CMD "wipetable yes-erase-sensor-table"
-
-static void handle_wipetable(const char *cmd, char *resp, size_t resp_size) {
-    if (strcmp(cmd, WIPETABLE_CONFIRM_CMD) != 0) {
-        snprintf(resp, resp_size,
-                 "wipetable: refused — this erases the whole sensor table. "
-                 "Send exactly \"%s\" to confirm.\n", WIPETABLE_CONFIRM_CMD);
-        return;
-    }
-    if (!roster_change_ready("wipetable", resp, resp_size)) return;
-    if (!label_store_wipe()) {
-        snprintf(resp, resp_size, "wipetable: failed — check the serial log\n");
-        return;
-    }
-    temp_store_rediscover();
-    snprintf(resp, resp_size,
-             "wipetable: table erased, rediscovered %d sensor(s) as \"%s\" — "
-             "re-run the collector's table download\n",
-             g_temp_num_devs, LABEL_PLACEHOLDER);
 }
 
 // `config get` / `config set <max_retries> <retry_interval_ms>` — the
@@ -311,14 +212,6 @@ static void handle_wifi_cmd(const char *cmd, size_t cmd_len, char *resp,
         sd_ring_status(resp, resp_size);
     } else if (strcmp(cmd, "table") == 0) {
         handle_table(resp, resp_size);
-    } else if (strcmp(cmd, "pause") == 0) {
-        handle_pause(resp, resp_size);
-    } else if (strcmp(cmd, "resume") == 0) {
-        handle_resume(resp, resp_size);
-    } else if (strncmp(cmd, "decomm", 6) == 0) {
-        handle_decomm(cmd, resp, resp_size);
-    } else if (strncmp(cmd, "wipetable", 9) == 0) {
-        handle_wipetable(cmd, resp, resp_size);
     } else if (strncmp(cmd, "label", 5) == 0) {
         handle_label(cmd, resp, resp_size);
     } else if (strncmp(cmd, "config", 6) == 0) {

@@ -40,7 +40,7 @@
 ## Payload (set format)
 
 Each set: `timestamp (4B) + count (1B) + count × [sensor_id (1B) + temperature (2B fixed-point) + valid (1B)]`.
-Timestamp is shared per set (all sensors read together), not repeated per-sensor, saving bytes — sensor_id is a 1-byte index into the logger's persistent sensor table (see `label_store.h`; the `table` command fetches it), not the full 8-byte DS18B20 ROM code. `valid` is nonzero only if the reading is a real CRC-checked temperature; a sensor that didn't respond or failed its CRC that cycle still gets an entry (so every set always has exactly `N_sensors` entries), with `valid = 0` and `temperature` meaningless. The table's index only changes on an explicit register/decomm/wipe (never as a side effect of which probes happen to answer a boot's bus scan), so the receiver re-fetches it after such a change rather than once per session.
+Timestamp is shared per set (all sensors read together), not repeated per-sensor, saving bytes — sensor_id is a 1-byte index into the logger's persistent sensor table (see `label_store.h`; the `table` command fetches it), not the full 8-byte DS18B20 ROM code. `valid` is nonzero only if the reading is a real CRC-checked temperature; a sensor that didn't respond or failed its CRC that cycle still gets an entry (so every set always has exactly `N_sensors` entries), with `valid = 0` and `temperature` meaningless. The table's index only changes on an explicit registration (never as a side effect of which probes happen to answer a boot's bus scan), so the receiver re-fetches it after adding a sensor rather than once per session.
 
 ## Sizing (computed at runtime, not hardcoded)
 

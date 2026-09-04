@@ -11,23 +11,24 @@
  * config_store.c's config.dat). This table's array index *is* the wire
  * sensor_id (see temp_store.h) -- unlike a raw 1-wire search order, it is
  * stable across reboots because it only ever changes on an explicit
- * register/decomm/wipe call, never as a side effect of which probes happen
- * to answer a given boot's bus scan.
+ * register_new() call, never as a side effect of which probes happen to
+ * answer a given boot's bus scan.
  *
  * The index exists purely to keep the wire protocol and CSV compact (1
  * byte instead of an 8-byte romcode per reading) -- it carries no identity
- * of its own. label_store_decomm() compacts the table when a sensor is
- * removed, so a freed slot is reused by whatever is registered next; the
- * collector is expected to re-download the table after every such change
- * and resolve sensor_id to label immediately rather than storing the index
- * long-term.
+ * of its own; the collector resolves sensor_id to label immediately rather
+ * than storing the index long-term.
+ *
+ * There is no in-place removal. If a sensor goes bad, the whole table is
+ * rebuilt from scratch (`format`, then reboot with only the working
+ * probes attached) rather than editing one entry out -- see OPERATIONS.md.
  *
  * Growth workflow: connect one new probe, reboot so the 1-wire scan finds
  * it, label_store_register_new() auto-adds it with a placeholder label,
  * then the operator renames it with the `label <index> <string>` command
  * before adding the next probe. The collector is expected to be paused
- * during this process (and during a decomm or wipe) and only re-download
- * the `table` once the operator says the roster change is complete.
+ * during this process and only re-download the `table` once the operator
+ * says the roster change is complete.
  */
 
 #define LABEL_MAX_ENTRIES 20  // matches TEMP_STORE_MAX_DEVICES
@@ -64,16 +65,5 @@ bool label_store_get(int index, uint64_t *romcode, char *out, size_t out_size);
 // label alongside its wire index, without the operator having to
 // cross-reference against a separate `labels` dump by hand.
 bool label_store_lookup(uint64_t romcode, char *out, size_t out_size);
-
-// Removes the entry at `index` and shifts every later entry down one slot
-// to close the gap -- the freed slot number is whatever register_new()
-// assigns next. False (no-op) if index is out of range or the write
-// failed, in which case the in-RAM table is left exactly as it was so a
-// failed persist can't desync from disk.
-bool label_store_decomm(int index);
-
-// Clears the whole table (count = 0) and persists the empty table. False
-// if the write failed, in which case the in-RAM table is unchanged.
-bool label_store_wipe(void);
 
 #endif
