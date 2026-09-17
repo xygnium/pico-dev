@@ -3,15 +3,35 @@
 UDP protocol (see temp-logger-udp-protocol.md) and store them in a SQLite
 database.
 
-One-shot: does exactly one REQUEST -> DATA/ACK/NACK -> (watermark advance)
-cycle per invocation, then exits. Meant to be run periodically by cron/a
-systemd timer (the protocol doc's "hourly, normally"), not to loop itself.
+By default does exactly one REQUEST -> DATA/ACK/NACK -> (watermark advance)
+cycle per invocation, then exits -- meant to be run periodically by cron/a
+systemd timer (the protocol doc's "hourly, normally"). Pass --loop to run
+forever instead, as a container's main process: see the --loop section
+below.
 
 Usage:
     ./collector.py                       # pull into ./temp_sense.db
     ./collector.py --db-path /path/to.db
     ./collector.py --host 1.2.3.4
     ./collector.py --table               # refresh the sensor table instead
+    ./collector.py --loop                # run forever; see below
+
+--loop mode: runs forever, pulling once and then sleeping until the next
+cycle, repeating until SIGTERM. The interval is read from --config-path
+(default ./collector.conf, a plain-text `interval_seconds=N` line) fresh
+at the top of every cycle -- not just once at startup -- so it can be
+changed with a text edit while the process keeps running. A missing or
+unparseable config file falls back to DEFAULT_INTERVAL_SECONDS (the
+protocol's normal hourly cadence) rather than erroring, so a bad edit
+degrades to "runs hourly" instead of crash-looping. A single failed poll
+(network timeout, stale sensor table, etc.) is logged and skipped rather
+than ending the loop -- the next cycle tries again.
+
+Stopping --loop mode: SIGTERM (what `podman stop` sends) and SIGINT
+(Ctrl-C) both request a clean exit. The loop sleeps in 1-second
+increments rather than one long sleep so it notices the request and exits
+within about a second, whether it's idle or mid-poll -- an interrupted
+poll isn't a correctness problem (see the note on retries below).
 
 Exit status is 0 on a fully-completed transfer, 1 if it gave up partway
 (no response, or a packet failed CRC past the device's configured
@@ -42,16 +62,19 @@ import argparse
 import datetime
 import os
 import re
+import signal
 import socket
 import sqlite3
 import struct
 import sys
+import time
 import zlib
 
 HOST = "192.168.1.120"
 PORT = 8080
 BUFSIZE = 1024
 SETUP_TIMEOUT = 5  # seconds, for the plain-ASCII bootstrap commands
+DEFAULT_INTERVAL_SECONDS = 3600  # the protocol's normal cadence; --loop's fallback
 
 XFER_MAGIC = 0xA5
 XFER_VERSION = 1
@@ -288,6 +311,75 @@ def run_transfer(sock, addr, max_retries, retry_interval_s, conn, table):
         expected_seq += 1
 
 
+def poll_once(conn, sock, addr):
+    """One pull attempt against the device's currently-known sensor table.
+    Returns True on a fully-completed transfer. Any failure (network,
+    protocol, or a stale/missing sensor table) is logged and returns False
+    rather than raising, so --loop mode can just move on to the next
+    cycle instead of dying."""
+    try:
+        table = load_table(conn)
+    except RuntimeError as e:
+        print("collector: {}".format(e), file=sys.stderr)
+        return False
+
+    try:
+        max_retries, retry_interval_ms = fetch_config(sock, addr)
+    except (socket.timeout, RuntimeError) as e:
+        print("collector: setup failed: {}".format(e), file=sys.stderr)
+        return False
+    retry_interval_s = retry_interval_ms / 1000.0
+
+    return run_transfer(sock, addr, max_retries, retry_interval_s, conn, table)
+
+
+def read_interval_or_default(path, default=DEFAULT_INTERVAL_SECONDS):
+    """`interval_seconds=N` from a plain key=value config file, read fresh
+    on every call rather than cached -- that's what lets --loop's cadence
+    be changed with a text edit while the process keeps running. Anything
+    that isn't a clean positive integer (missing file, bad syntax, zero,
+    negative) falls back to `default` instead of raising, so a typo in the
+    file degrades to "runs at the normal cadence" rather than crashing the
+    loop."""
+    try:
+        with open(path) as f:
+            for line in f:
+                key, _, value = line.partition("=")
+                if key.strip() != "interval_seconds":
+                    continue
+                seconds = int(value.strip())
+                if seconds > 0:
+                    return seconds
+    except (OSError, ValueError):
+        pass
+    return default
+
+
+def run_loop(conn, sock, addr, config_path):
+    stop_requested = False
+
+    def handle_stop(signum, frame):
+        nonlocal stop_requested
+        stop_requested = True
+
+    signal.signal(signal.SIGTERM, handle_stop)
+    signal.signal(signal.SIGINT, handle_stop)
+
+    while not stop_requested:
+        started = datetime.datetime.now(tz=datetime.timezone.utc).isoformat()
+        ok = poll_once(conn, sock, addr)
+        print("collector: loop cycle at {} -- {}".format(
+            started, "ok" if ok else "failed, will retry next cycle"))
+
+        interval = read_interval_or_default(config_path)
+        for _ in range(interval):
+            if stop_requested:
+                break
+            time.sleep(1)
+
+    print("collector: stopping (signal received)", file=sys.stderr)
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__,
@@ -303,6 +395,14 @@ def main():
                           "pulling readings. Run this by hand once after "
                           "adding a sensor (see label_store.h) -- it is "
                           "never done as part of a normal pull.")
+    ap.add_argument("--loop", action="store_true",
+                     help="run forever instead of a single pull -- see the "
+                          "--loop section in this script's module docstring "
+                          "(pass -h with no other args, or read the top of "
+                          "collector.py). Ignored if --table is also given.")
+    ap.add_argument("--config-path", default="collector.conf",
+                     help="--loop's interval config file (default "
+                          "%(default)s), re-read every cycle")
     args = ap.parse_args()
     addr = (args.host, args.port)
 
@@ -324,22 +424,13 @@ def main():
             len(entries), args.db_path))
         return
 
-    try:
-        table = load_table(conn)
-    except RuntimeError as e:
+    if args.loop:
+        run_loop(conn, sock, addr, args.config_path)
         sock.close()
         conn.close()
-        raise SystemExit("collector: {}".format(e))
+        return
 
-    try:
-        max_retries, retry_interval_ms = fetch_config(sock, addr)
-    except (socket.timeout, RuntimeError) as e:
-        sock.close()
-        conn.close()
-        raise SystemExit("collector: setup failed: {}".format(e))
-    retry_interval_s = retry_interval_ms / 1000.0
-
-    ok = run_transfer(sock, addr, max_retries, retry_interval_s, conn, table)
+    ok = poll_once(conn, sock, addr)
     sock.close()
     conn.close()
     sys.exit(0 if ok else 1)
