@@ -47,6 +47,13 @@ Decisions already made with Mike for this plan:
   watching how it behaves.
 - **The container must stop gracefully** on `podman stop` (SIGTERM), not rely on the
   10s grace period + SIGKILL. See step 3.
+- **The loop lives inside `collector.py` itself (`--loop` mode), not a separate bash
+  wrapper script.** A bash entrypoint has two footguns that Python doesn't: PID 1 in a
+  container ignores unhandled signals in *either* language, but bash additionally
+  defers running a trap handler until a foreground command returns — so `trap ... TERM;
+  sleep 3600` still blocks the full hour. Python's `signal.signal()` doesn't have that
+  second gotcha, and folding the loop into `collector.py` removes the subprocess
+  boundary entirely (no separate process to forward SIGTERM to and wait on).
 
 ## Approach
 
@@ -81,7 +88,7 @@ shape:
 |---|---|
 | `recreate.sh` | Builds/replaces the container. Bind-mounts this repo's `temp-sense/` directory (code — changes often, never baked into the image), a `config/` directory (holds `collector.conf` — the poll interval, see step 3), and a `data/` directory (holds `temp_sense.db` — the "the image holds tools, the bind mount holds work" split from `PICO-CONTAINER-DESIGN.md` §8). `--userns=keep-id` so files come out owned by `mike`, same reasoning as mosquitto's `config/`/`data/`. Default network mode — no `--network=pasta` flag (see Context). |
 | `ctl.sh` | `start` / `stop` / `restart` / `status`, ported directly from `~/containers/mosquitto/ctl.sh`: `start` runs the existing container, `restart` rebuilds from `recreate.sh`, falling back to `recreate.sh` on first run. |
-| `Containerfile` | Minimal Python base (stdlib `sqlite3` only — no extra deps), pinned by digest like mosquitto's `eclipse-mosquitto@sha256:...`. |
+| `Containerfile` | Minimal Python base (stdlib `sqlite3`/`signal` only — no extra deps), pinned by digest like mosquitto's `eclipse-mosquitto@sha256:...`. `ENTRYPOINT ["./collector.py", "--loop", "--db-path", "/app/data/temp_sense.db"]` — no shell wrapper, no `CMD` script. |
 | `backup.sh` | rsync `data/temp_sense.db` to the external drive, same shape as mosquitto's `backup.sh` (check drive mounted, exit non-zero if not). |
 | `README.md`, `RECOVERY.md`, `ACCEPTANCE.md` | Ported structure from the mosquitto project's docs, adapted to this container. |
 
@@ -91,12 +98,12 @@ Reference files to reuse/copy patterns from (don't reinvent):
 - `~/picodev/PICO-CONTAINER-DESIGN.md` §4 (networking decision), §8 (image vs. bind-mount
   split), §10 (this exact container's requirements, already written).
 
-### 3. Entrypoint: the sleep-loop
+### 3. `--loop` mode in `collector.py`: the container's whole main process
 
-A thin wrapper script (e.g. `run_loop.sh`, or a `--loop` mode added to `collector.py`
-itself) becomes the container's main process — and it has two responsibilities beyond
-just looping: reading the interval from a config file each cycle, and stopping
-promptly on SIGTERM.
+No wrapper script, no shell, no subprocess. Add a `--loop` flag to `collector.py` that
+turns the existing one-shot pull into the container's entire main process — single
+Python program, which sidesteps bash's foreground-signal-deferral pitfall entirely (see
+Context) and means there's no child process to forward signals to.
 
 **Interval from a config file.** `config/collector.conf` (bind-mounted, plain text or
 minimal key=value — e.g. `interval_seconds=3600`), read fresh at the top of every loop
@@ -105,32 +112,37 @@ hardcoded default (the protocol's normal hourly cadence) rather than erroring, s
 edit degrades to "runs hourly" instead of crash-looping. This means changing the
 interval is just editing the file — no `ctl.sh restart`, no container involvement at all.
 
-**Graceful stop.** In a container, the entrypoint script runs as PID 1, and PID 1 does
-*not* get the normal default disposition for unhandled signals — an untrapped SIGTERM
-is silently ignored rather than terminating the process, so without an explicit trap
-`podman stop` would sit out the full grace period (default 10s) and then SIGKILL,
-every time. Needs:
-- `trap 'graceful_exit' TERM` in the wrapper, and a `sleep N & wait $!` form (not a bare
-  foreground `sleep N`) so the trap fires immediately instead of waiting for sleep to
-  finish.
-- If SIGTERM arrives while a poll cycle is in flight, forward it to the `collector.py`
-  child and wait for it to exit before the wrapper exits itself — don't kill it
-  mid-transfer. The UDP protocol already tolerates an abandoned/incomplete transfer
-  (retried wholesale next cycle per `temp-logger-udp-protocol.md`), but `collector.py`
-  should still catch SIGTERM to close its SQLite connection cleanly rather than being
-  killed with a transaction half-committed.
+**Graceful stop.** PID 1 in a container ignores unhandled signals regardless of
+language, so `--loop` mode must call `signal.signal(signal.SIGTERM, handler)` — without
+it, `podman stop` sits out the full grace period (default 10s) and SIGKILLs, every
+time. The handler just sets a flag; the loop sleeps in 1-second increments (not one
+`time.sleep(interval)` call) and checks the flag each second, so it notices and exits
+within about a second rather than waiting out the full interval — a bare
+`time.sleep(interval)` would *not* wake up early just because the handler ran (Python
+auto-retries an interrupted sleep since 3.5/PEP 475). An in-flight poll cycle getting
+cut off isn't a correctness problem: the UDP protocol already tolerates an
+abandoned/incomplete transfer (retried wholesale next cycle per
+`temp-logger-udp-protocol.md`), and SQLite's own writes are transactional, so there's no
+corruption risk even if the flag is noticed mid-poll.
 
+```python
+import signal, time
+
+stop_requested = False
+def handle_term(signum, frame):
+    global stop_requested
+    stop_requested = True
+
+signal.signal(signal.SIGTERM, handle_term)
+
+while not stop_requested:
+    poll_once(db_path)   # existing pull-and-store logic
+    interval = read_interval_or_default("config/collector.conf")
+    for _ in range(interval):
+        if stop_requested:
+            break
+        time.sleep(1)
 ```
-while true; do
-  interval=$(read_interval_or_default config/collector.conf)
-  ./collector.py --db-path /app/data/temp_sense.db &
-  wait $!
-  sleep "$interval" &
-  wait $!
-done
-```
-(illustrative — exact signal-forwarding/trap wiring gets nailed down during
-implementation, not in this doc.)
 
 ### 4. Verification, end to end
 
