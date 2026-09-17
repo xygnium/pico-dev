@@ -73,6 +73,11 @@ Modify `temp-sense/collector.py` (one level up from this file) in place:
     transfers safe today.
 - Take the DB path as a CLI flag / env var (e.g. `--db-path`, defaulting to something
   sane) rather than hardcoding, so the container can point it at the bind mount.
+- Set `PRAGMA journal_mode=WAL;` once on the collector's connection. Not needed for the
+  collector's own correctness, but it's what lets a future report reader (see
+  Reporting, below) read the DB concurrently without hitting "database is locked" —
+  cheaper to set now than to retrofit once something else depends on the file's
+  journal mode.
 - Leave the UDP protocol implementation (retries, CRC handling, transfer/ack logic)
   untouched — only the storage layer changes.
 - Test this step standalone on `dev10` against the real Pico before touching
@@ -177,3 +182,28 @@ while not stop_requested:
   once the manual flow is proven, not before.
 - Backup/off-site (git for scripts, rsync for `data/`) — structurally ported in step 2
   but not exercised against the real backup drive until the rest is verified.
+
+## Reporting (future phase)
+
+Not designed in this pass — the collector's job is ingestion, not reporting, and the
+two should stay decoupled (a slow or crashing report run shouldn't be able to affect
+data collection). Recorded here so the access pattern is settled before that phase
+starts:
+
+- **A report script/container just opens `temp_sense.db` directly.** SQLite is a file,
+  not a service — there's no network hop or API to build, and no coupling to the
+  collector process at runtime. This is the main reason SQLite was the right call for
+  a single-host setup like this one.
+- **WAL mode (set in step 1) is what makes this safe.** It lets one writer (the
+  collector) and any number of readers (report runs) work against the file
+  concurrently without either side blocking or erroring out.
+- **The report side should open read-only, and if it's a container, mount `data/`
+  read-only too** (`-v .../data:/app/data:ro`, plus `sqlite3.connect("file:temp_sense.db?mode=ro", uri=True)`
+  in Python) — belt-and-suspenders so nothing on the reporting side can ever corrupt
+  the production DB.
+- **If run directly on `dev10` with no container at all**, it only needs read
+  permission on `~/containers/temp-collector/data/temp_sense.db` — already satisfied,
+  since the collector's `--userns=keep-id` leaves that file owned by `mike`.
+- **Open question for when this phase starts:** on-demand (run by hand when a summary
+  is wanted) vs. its own scheduled loop (daily/weekly) — depends on what the reports
+  are actually for, not decided here.
