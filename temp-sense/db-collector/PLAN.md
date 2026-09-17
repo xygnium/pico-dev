@@ -38,6 +38,15 @@ Decisions already made with Mike for this plan:
 - **Scheduling = a sleep-loop inside one long-running container** (poll → sleep to next
   hour → repeat), not a host systemd timer firing short-lived container runs. This is
   what makes the mosquitto `ctl.sh start/stop/status/restart` pattern applicable at all.
+- **Poll interval is set via a config file, not a startup option/env var.** Mirrors a
+  precedent already in this repo: the Pico firmware's own sample interval is runtime
+  -configurable via `config.dat` rather than fixed at flash time (commit `fda2587`). A
+  file read fresh each loop iteration lets the interval be tuned with a text edit and
+  no container rebuild; a startup option would require `ctl.sh restart` (rebuild from
+  `recreate.sh`) for every change — worse for something likely to get tuned while
+  watching how it behaves.
+- **The container must stop gracefully** on `podman stop` (SIGTERM), not rely on the
+  10s grace period + SIGKILL. See step 3.
 
 ## Approach
 
@@ -70,7 +79,7 @@ shape:
 
 | File | Role |
 |---|---|
-| `recreate.sh` | Builds/replaces the container. Bind-mounts this repo's `temp-sense/` directory (code — changes often, never baked into the image) and a `data/` directory (holds `temp_sense.db` — the "the image holds tools, the bind mount holds work" split from `PICO-CONTAINER-DESIGN.md` §8). `--userns=keep-id` so the DB file comes out owned by `mike`, same reasoning as mosquitto's `config/`/`data/`. Default network mode — no `--network=pasta` flag (see Context). |
+| `recreate.sh` | Builds/replaces the container. Bind-mounts this repo's `temp-sense/` directory (code — changes often, never baked into the image), a `config/` directory (holds `collector.conf` — the poll interval, see step 3), and a `data/` directory (holds `temp_sense.db` — the "the image holds tools, the bind mount holds work" split from `PICO-CONTAINER-DESIGN.md` §8). `--userns=keep-id` so files come out owned by `mike`, same reasoning as mosquitto's `config/`/`data/`. Default network mode — no `--network=pasta` flag (see Context). |
 | `ctl.sh` | `start` / `stop` / `restart` / `status`, ported directly from `~/containers/mosquitto/ctl.sh`: `start` runs the existing container, `restart` rebuilds from `recreate.sh`, falling back to `recreate.sh` on first run. |
 | `Containerfile` | Minimal Python base (stdlib `sqlite3` only — no extra deps), pinned by digest like mosquitto's `eclipse-mosquitto@sha256:...`. |
 | `backup.sh` | rsync `data/temp_sense.db` to the external drive, same shape as mosquitto's `backup.sh` (check drive mounted, exit non-zero if not). |
@@ -84,18 +93,44 @@ Reference files to reuse/copy patterns from (don't reinvent):
 
 ### 3. Entrypoint: the sleep-loop
 
-A thin wrapper script (e.g. `run_loop.sh` or a `--loop` mode added to `collector.py`
-itself) that becomes the container's main process:
+A thin wrapper script (e.g. `run_loop.sh`, or a `--loop` mode added to `collector.py`
+itself) becomes the container's main process — and it has two responsibilities beyond
+just looping: reading the interval from a config file each cycle, and stopping
+promptly on SIGTERM.
+
+**Interval from a config file.** `config/collector.conf` (bind-mounted, plain text or
+minimal key=value — e.g. `interval_seconds=3600`), read fresh at the top of every loop
+iteration, not just once at startup. A missing or unparseable file falls back to a
+hardcoded default (the protocol's normal hourly cadence) rather than erroring, so a bad
+edit degrades to "runs hourly" instead of crash-looping. This means changing the
+interval is just editing the file — no `ctl.sh restart`, no container involvement at all.
+
+**Graceful stop.** In a container, the entrypoint script runs as PID 1, and PID 1 does
+*not* get the normal default disposition for unhandled signals — an untrapped SIGTERM
+is silently ignored rather than terminating the process, so without an explicit trap
+`podman stop` would sit out the full grace period (default 10s) and then SIGKILL,
+every time. Needs:
+- `trap 'graceful_exit' TERM` in the wrapper, and a `sleep N & wait $!` form (not a bare
+  foreground `sleep N`) so the trap fires immediately instead of waiting for sleep to
+  finish.
+- If SIGTERM arrives while a poll cycle is in flight, forward it to the `collector.py`
+  child and wait for it to exit before the wrapper exits itself — don't kill it
+  mid-transfer. The UDP protocol already tolerates an abandoned/incomplete transfer
+  (retried wholesale next cycle per `temp-logger-udp-protocol.md`), but `collector.py`
+  should still catch SIGTERM to close its SQLite connection cleanly rather than being
+  killed with a transaction half-committed.
 
 ```
 while true; do
-  ./collector.py --db-path /app/data/temp_sense.db
-  sleep <seconds to next hour, or a fixed interval>
+  interval=$(read_interval_or_default config/collector.conf)
+  ./collector.py --db-path /app/data/temp_sense.db &
+  wait $!
+  sleep "$interval" &
+  wait $!
 done
 ```
-
-Make the interval configurable (env var) so it can be shortened for testing without
-waiting an hour per cycle.
+(illustrative — exact signal-forwarding/trap wiring gets nailed down during
+implementation, not in this doc.)
 
 ### 4. Verification, end to end
 
@@ -113,7 +148,15 @@ waiting an hour per cycle.
    mosquitto's `ACCEPTANCE.md` TC-7): `podman rm` the container (and optionally
    `podman rmi` the image), re-run `recreate.sh`, confirm `data/temp_sense.db` and its
    rows are untouched.
-5. Write up the executed checks as `ACCEPTANCE.md`, same format as mosquitto's.
+5. **Graceful stop**: `ctl.sh stop` (or `podman stop`) while idle (sleeping) → confirm
+   the container exits well under the SIGKILL grace period, not at the 10s timeout.
+   Repeat while a poll cycle is actually in flight → confirm it finishes/aborts cleanly
+   (no truncated write, `podman logs` shows a clean shutdown message, not a kill).
+6. **Live interval change**: with the container running, edit `config/collector.conf`
+   to a short interval → confirm the *next* cycle uses it without any `ctl.sh` command.
+   Also confirm a malformed/missing config file falls back to the hourly default
+   instead of crash-looping.
+7. Write up the executed checks as `ACCEPTANCE.md`, same format as mosquitto's.
 
 ### Deliberately deferred (not in this pass)
 
