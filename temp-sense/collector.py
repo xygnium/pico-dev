@@ -21,9 +21,9 @@ cycle, repeating until SIGTERM. The interval is read from --config-path
 (default ./collector.conf, a plain-text `interval_seconds=N` line) fresh
 at the top of every cycle -- not just once at startup -- so it can be
 changed with a text edit while the process keeps running. A missing or
-unparseable config file falls back to DEFAULT_INTERVAL_SECONDS (the
-protocol's normal hourly cadence) rather than erroring, so a bad edit
-degrades to "runs hourly" instead of crash-looping. A single failed poll
+unparseable config file falls back to DEFAULT_INTERVAL_SECONDS (30
+minutes) rather than erroring, so a bad edit degrades to "runs every 30
+minutes" instead of crash-looping. A single failed poll
 (network timeout, stale sensor table, etc.) is logged and skipped rather
 than ending the loop -- the next cycle tries again.
 
@@ -74,7 +74,7 @@ HOST = "192.168.1.120"
 PORT = 8080
 BUFSIZE = 1024
 SETUP_TIMEOUT = 5  # seconds, for the plain-ASCII bootstrap commands
-DEFAULT_INTERVAL_SECONDS = 3600  # the protocol's normal cadence; --loop's fallback
+DEFAULT_INTERVAL_SECONDS = 1800  # 30 minutes; --loop's fallback
 
 XFER_MAGIC = 0xA5
 XFER_VERSION = 1
