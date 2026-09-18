@@ -170,7 +170,11 @@ Steps:
 
 ## Command reference
 
-| Command | Effect |
+All of these are sent as `udp_client.py <command>` (see the intro above)
+— the table lists the command name/args you pass to `udp_client.py`, not
+raw wire bytes.
+
+| `udp_client.py` command | Effect |
 |---|---|
 | `table` | The persistent sensor table: index, romcode, label for every registered probe (including one not currently on the bus — its readings show as invalid rather than disappearing). |
 | `label <index> <string>` | Rename the probe at table index `<index>` (must already have a `labels.dat` entry — auto-created at boot). |
