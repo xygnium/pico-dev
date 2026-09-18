@@ -11,9 +11,16 @@ that project's own `README.md`, `RECOVERY.md`, and `ACCEPTANCE.md` for
 container-level operations (backup, disaster recovery, what's been
 verified) not repeated here.
 
-All device commands below are sent with `udp_client.py <command>` (add
-`--host <ip>` if the Pico's DHCP lease has changed from the script's
-default).
+All device commands below are sent with `udp_client.py`, run from this
+directory (`~/repos/pico-dev/temp-sense`):
+```
+./udp_client.py table               # send one command, print the reply
+./udp_client.py                     # no args: prompts for a command
+./udp_client.py --host <ip> table   # if the Pico's address has changed
+```
+The default address (`192.168.1.120`) is hardcoded in `udp_client.py`,
+`collector.py`, and `ice_bath_id.py` — see "No reply from the device"
+under Troubleshooting if it changes.
 
 ## Normal operation
 
@@ -60,6 +67,14 @@ Exit status `0` on a complete pull, `1` if it gave up partway — same
 retry-is-always-safe guarantee as above. This is the same code the
 container runs, so it's a reasonable way to test the wire protocol
 against a firmware change without touching the container at all.
+
+**A manual pull consumes the readings it fetches.** The device advances
+its watermark once the pull is ACKed, so anything pulled into a test
+database will never be offered to the container again — those readings
+are missing from `temp_sense.db` for good. Point a manual pull at the
+live database (`~/containers/temp-collector/data/temp_sense.db`) unless
+losing that window of data is acceptable. A fresh test database also
+needs its own sensor table first (see "Reading sensor locations" below).
 
 A pull refuses to run if the `sensors` table is empty — see "Reading
 sensor locations" below.
@@ -138,10 +153,9 @@ and test each before adding the next:
    reasonable (`read`, or `sd` for ring status).
 7. Repeat from step 2 for the next probe, if any.
 8. Once all additions are done, refresh the sensor table with the
-   finished roster (see "Reading sensor locations" above — this works
-   with the collector stopped, since it writes straight to the
-   bind-mounted database), then **restart the collector**
-   (`./ctl.sh start`).
+   finished roster (see "Reading sensor locations" above — use the
+   host-run form, since the collector is still stopped and `podman exec`
+   needs it running), then **restart the collector** (`./ctl.sh start`).
 
 ## Full reset (wiping the logger)
 
@@ -158,15 +172,26 @@ is; use this procedure whenever you need one, for example:
 
 Steps:
 
-1. **Stop the logger** and the collector (`ctl.sh stop`).
+1. **Stop the collector** (`cd ~/containers/temp-collector && ./ctl.sh
+   stop`).
 2. `format` (see the command reference below). Any unconfirmed readings
    are lost; that's accepted as part of a full reset.
 3. Reattach only the probes that should be on the new roster (all of them,
    for a fresh start; only the good ones, if retiring a bad sensor), then
    reboot so the boot-time scan registers them fresh (see "Adding a new
    sensor" above for naming each one).
-4. Refresh the sensor table with the new roster (see "Reading sensor
-   locations" above), then **restart the collector** (`ctl.sh start`).
+4. Re-apply any non-default settings — `format` erased `config.dat`, so
+   the retry policy and sample interval are back to their defaults (check
+   with `config get`; see "Sample rate & retention" for the reboot a
+   `config sample` change needs). The RTC is not on the SD card and keeps
+   its time.
+5. Refresh the sensor table with the new roster (see "Reading sensor
+   locations" above — host-run form, since the collector is stopped),
+   then **restart the collector** (`./ctl.sh start`).
+
+`format` only touches the device. Readings already collected stay in
+`temp_sense.db`; to wipe those as well, see
+`~/containers/temp-collector/README.md`'s "Resetting the database".
 
 ## Command reference
 
@@ -175,23 +200,31 @@ All of these are sent as `udp_client.py <command>` (see the intro above).
 | `udp_client.py` command | Effect |
 |---|---|
 | `table` | The persistent sensor table: index, romcode, label for every registered probe (including one not currently on the bus — its readings show as invalid rather than disappearing). |
-| `label <index> <string>` | Rename the probe at table index `<index>` (must already have a `labels.dat` entry — auto-created at boot). |
-| `config get` | Show the receiver's retry policy (`max_retries`, `retry_interval_ms`) that `collector.py` reads at session start, plus the *currently-running* `sample_interval_ms`. |
+| `label <index> <string>` | Rename the probe at table index `<index>` (from `table`). Max 23 characters; spaces allowed. Only renames an existing entry — entries are auto-created at boot. |
+| `config get` | Show the retry policy (`max_retries`, `retry_interval_ms`) that `collector.py` reads at session start, plus the *stored* `sample_interval_ms` — which may not be what the running loop uses until the next reboot (see "Sample rate & retention"). |
 | `config set <max_retries> <retry_interval_ms>` | Update the retry policy. Bounds: retries 1–255, interval 100–600000ms. Defaults: 5 / 5000ms. |
 | `config sample <ms>` | Set the sampling interval for the next reboot (see "Sample rate & retention" above — **not live**). Bounds: 1000–3600000ms. Default: 5000ms. |
 | `settime YYYY-MM-DD HH:MM:SS D` | Set the RTC. `D` is day-of-week, 1=Monday. Send **UTC** — `udp_client.py settime` (no args) does this for you from your host clock. |
 | `sd` | Ring buffer status: capacity, records stored, seq range, confirmed watermark, backlog. |
-| `read` | Most recent reading, for a quick manual check. |
+| `read` | Latest reading for each registered probe, one line per probe (by romcode, with its own timestamp — a probe that stopped reporting shows a stale time). Leads with a warning if the RTC isn't set. |
 | `format` | **Destroys everything on the SD card** — the ring, `config.dat`, and `labels.dat` alike, since it's a full card reformat, not a per-file delete. Requires the exact confirmation token; `udp_client.py format` prompts before sending it. |
 | `reboot` | Restart the device (e.g. to apply a `config sample` change). Nothing is destroyed — the ring/config/label tables are all on SD and survive untouched — so no confirmation token is needed. |
 
 ## Troubleshooting
 
-- **"rtc: clock not set" at boot** — every timestamp will be wrong until
-  you run `udp_client.py settime`.
-- **No reply from the device** — check it's on the network (DHCP lease may
-  have changed; update `--host`), and that nothing else has the serial
-  console (`fuser -v /dev/ttyACM0`) if you need to check the boot log.
+- **"rtc: clock not set" at boot, or "warning: rtc not set" in `read`
+  output** — every timestamp will be wrong until you run
+  `./udp_client.py settime`.
+- **No reply from the device** — check it's on the network, and that
+  nothing else has the serial console (`fuser -v /dev/ttyACM0`) if you
+  need to check the boot log. If its DHCP address has changed, `--host`
+  fixes `udp_client.py` for one command, but the container has no
+  `--host` setting: edit `HOST` in `collector.py` (bind-mounted into the
+  container) and run `./ctl.sh restart`.
+- **Reply is just `temp-sense ack: <your command>`** — the device didn't
+  recognise the command (typo, or wrong arguments for a command it only
+  matches exactly, like `sd` or `reboot`) and echoed it back instead of
+  running it.
 - **`collector.py` exits 1** (standalone/manual run) — just rerun it; see
   "Normal operation" above for why this is always safe. Inside the
   running container this happens automatically — a failed cycle is
