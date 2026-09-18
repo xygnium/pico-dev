@@ -4,7 +4,12 @@ A Pico W reads up to 20 DS18B20 probes on a shared 1-Wire bus at a fixed
 interval (5s today — see "Sample rate & retention"), timestamps each
 reading against a battery-backed DS3231 RTC, and logs to a ring buffer on
 the SD card. `collector.py` pulls pending readings off the device over UDP
-and appends them to a CSV on your machine.
+and stores them in a SQLite database — normally running continuously
+inside the `temp-collector` Podman container
+(`~/containers/temp-collector/`), not invoked by hand or by cron. See
+that project's own `README.md`, `RECOVERY.md`, and `ACCEPTANCE.md` for
+container-level operations (backup, disaster recovery, what's been
+verified) not repeated here.
 
 All device commands below are sent with `udp_client.py <command>` (add
 `--host <ip>` if the Pico's DHCP lease has changed from the script's
@@ -12,43 +17,78 @@ default).
 
 ## Normal operation
 
-Run `collector.py` periodically (cron/systemd timer — hourly is the
-protocol's normal cadence):
+The collector runs continuously as the `temp-collector` container, polling
+on its own schedule — currently every 30 minutes
+(`~/containers/temp-collector/config/collector.conf`'s `interval_seconds`,
+editable live, no restart needed). Day to day, there's nothing to invoke
+by hand:
 
 ```
-./collector.py
+cd ~/containers/temp-collector
+./ctl.sh status                    # is it up?
+podman logs -f temp-collector      # watch it poll in real time
 ```
 
-This appends new readings to `./temp_data.csv` (columns: `timestamp_epoch,
-label, timestamp_utc, temp_c, valid`). The wire's `sensor_id` is only a
+Readings land in `data/temp_sense.db` (SQLite): a `readings` table
+(columns: `timestamp_epoch, label, timestamp_utc, temp_c, valid`) and a
+`sensors` table (`id, romcode, label`). The wire's `sensor_id` is only a
 transport shorthand — `collector.py` resolves it to the sensor's current
-location label immediately, using its local `sensor_table.csv`, so the CSV
-is keyed by label rather than by an index that's meaningful only within one
-collector run. `valid` is `1` for a real CRC-checked reading and `0` when
-that sensor didn't respond or failed its CRC that cycle (the row is still
+location label immediately, using the `sensors` table, so `readings` is
+keyed by label rather than by an index that's meaningful only within one
+pull. `valid` is `1` for a real CRC-checked reading and `0` when that
+sensor didn't respond or failed its CRC that cycle (the row is still
 written, with `temp_c` meaningless) — a sensor going quiet shows up as a
 run of `valid=0` rows rather than silently disappearing from the log.
 
-Exit status is `0` on a complete pull, `1` if it gave up partway (device
-unreachable, or a packet failed CRC past the device's configured retry
-budget). **A failed run is always safe to just retry** — the device only
-advances its watermark on a confirmed final ACK, and rows are deduped by
-`(label, timestamp)`, so nothing is lost or duplicated by rerunning.
+Quick manual query:
+```
+python3 -c "
+import sqlite3
+conn = sqlite3.connect('/home/mike/containers/temp-collector/data/temp_sense.db')
+print(conn.execute('select * from readings order by timestamp_epoch desc limit 10').fetchall())
+"
+```
 
-A normal pull refuses to run if `sensor_table.csv` doesn't exist yet — see
-"Reading sensor locations" below.
+A single failed poll cycle (device unreachable, or a packet failed CRC
+past the device's configured retry budget) is logged and skipped, not
+fatal to the running container — the device only advances its watermark
+on a confirmed final ACK, and rows are deduped by the `readings` table's
+own `(timestamp_epoch, label)` primary key, so nothing is lost or
+duplicated by the next cycle retrying.
+
+**Running `collector.py` by hand** still works as a one-shot pull, for
+local testing or a one-off check outside the container:
+```
+./collector.py --db-path <path-to-a.db>
+```
+Exit status `0` on a complete pull, `1` if it gave up partway — same
+retry-is-always-safe guarantee as above. This is the same code the
+container runs, so it's a reasonable way to test the wire protocol
+against a firmware change without touching the container at all.
+
+A pull refuses to run if the `sensors` table is empty — see "Reading
+sensor locations" below.
 
 ### Reading sensor locations
 
+Works whether the container is running or not, since it's just writing to
+the same bind-mounted database file:
 ```
-./collector.py --table
+cd ~/repos/pico-dev/temp-sense
+./collector.py --table --db-path ~/containers/temp-collector/data/temp_sense.db
+```
+Or, if you'd rather stay inside the running container:
+```
+podman exec temp-collector python3 /app/temp-sense/collector.py --table \
+  --db-path /app/data/temp_sense.db --config-path /app/config/collector.conf
 ```
 
-This fetches the device's current persistent sensor table (index, romcode,
-label) into `sensor_table.csv` and exits — it does not pull readings. Run
-it once before your first pull, and again after adding a sensor or
-relabeling one (see "Adding a new sensor" below); it's never fetched
-automatically as part of a normal pull.
+Either fetches the device's current persistent sensor table (index,
+romcode, label) into the `sensors` table and exits — it does not pull
+readings. It's a full replace, not a merge (the device's table is the
+source of truth). Run it once before the first pull, and again after
+adding a sensor or relabeling one (see "Adding a new sensor" below); it's
+never fetched automatically as part of a normal pull.
 
 ## Sample rate & retention
 
@@ -77,12 +117,14 @@ retention = 2,097,152 / N_sensors × sample_interval
 | 20 (planned production ceiling) | ~6 days | ~36 days | ~73 days |
 
 Wraparound isn't signalled in-protocol (see the protocol doc's note on
-this), so it's on the operator to keep the collector running often enough
-relative to whatever retention the chosen interval/sensor-count combo
-gives. In practice, with `collector.py` run daily or more often, there's a
-comfortable margin at any interval/sensor-count combination in this table
-— this table matters most if collection is ever expected to lapse for an
-extended stretch (e.g. an extended remote deployment between site visits).
+this), so it's on the operator to keep the collector *container* running
+often enough relative to whatever retention the chosen interval/sensor-count
+combo gives. In practice, with the container polling every 30 minutes,
+there's a comfortable margin at any interval/sensor-count combination in
+this table — this matters most if the container itself is ever expected
+to be down for an extended stretch (not just a single missed poll), e.g.
+during a host migration or an extended remote deployment between site
+visits.
 
 ## Adding a new sensor
 
@@ -91,9 +133,9 @@ only changes on an explicit registration, never as a side effect of which
 probes happen to answer a boot's bus scan. Add sensors **one at a time**,
 and test each before adding the next:
 
-1. **Stop the collector cron/timer** for the duration of this process —
-   the sensor roster is in flux and pulled data shouldn't be trusted until
-   it's done.
+1. **Stop the collector** (`cd ~/containers/temp-collector && ./ctl.sh
+   stop`) for the duration of this process — the sensor roster is in flux
+   and pulled data shouldn't be trusted until it's done.
 2. Physically connect **one** new probe to the 1-Wire bus.
 3. Reboot the Pico (power-cycle, or reflash) so the boot-time scan finds
    it. The device auto-registers any new romcode at the next free table
@@ -107,9 +149,11 @@ and test each before adding the next:
    let a few sample cycles pass to sanity-check the reading looks
    reasonable (`read`, or `sd` for ring status).
 7. Repeat from step 2 for the next probe, if any.
-8. Once all additions are done, **restart the collector cron/timer**, and
-   run `./collector.py --table` once to refresh `sensor_table.csv` with
-   the finished roster.
+8. Once all additions are done, refresh the sensor table with the
+   finished roster (see "Reading sensor locations" above — this works
+   with the collector stopped, since it writes straight to the
+   bind-mounted database), then **restart the collector**
+   (`./ctl.sh start`).
 
 ## Full reset (wiping the logger)
 
@@ -126,15 +170,15 @@ is; use this procedure whenever you need one, for example:
 
 Steps:
 
-1. **Stop the logger** and the collector cron/timer.
+1. **Stop the logger** and the collector (`ctl.sh stop`).
 2. `format` (see the command reference below). Any unconfirmed readings
    are lost; that's accepted as part of a full reset.
 3. Reattach only the probes that should be on the new roster (all of them,
    for a fresh start; only the good ones, if retiring a bad sensor), then
    reboot so the boot-time scan registers them fresh (see "Adding a new
    sensor" above for naming each one).
-4. **Restart the collector cron/timer**, and run `./collector.py --table`
-   once to refresh `sensor_table.csv` with the new roster.
+4. Refresh the sensor table with the new roster (see "Reading sensor
+   locations" above), then **restart the collector** (`ctl.sh start`).
 
 ## Command reference
 
@@ -158,8 +202,19 @@ Steps:
 - **No reply from the device** — check it's on the network (DHCP lease may
   have changed; update `--host`), and that nothing else has the serial
   console (`fuser -v /dev/ttyACM0`) if you need to check the boot log.
-- **`collector.py` exits 1** — just rerun it; see "Normal operation" above
-  for why this is always safe.
+- **`collector.py` exits 1** (standalone/manual run) — just rerun it; see
+  "Normal operation" above for why this is always safe. Inside the
+  running container this happens automatically — a failed cycle is
+  logged and retried next cycle, no operator action needed; check
+  `podman logs temp-collector` if it keeps failing.
+- **"sensors table is empty" / "sensor_id N not in the sensors table"** —
+  see "Reading sensor locations" above; the device's roster has changed
+  (or this is a fresh database) and the local copy needs refreshing.
+- **Container-specific issues** (won't start, `podman logs` shows
+  nothing despite new data appearing, backup/recovery) — see
+  `~/containers/temp-collector/README.md`, `RECOVERY.md`, and
+  `ACCEPTANCE.md`, which cover the container's own operational history
+  and known gotchas rather than duplicating them here.
 - **Ring backlog growing** — check `sd` status; if the collector has been
   down long enough to threaten wraparound (permanent data loss for the
   oldest unconfirmed records), get it running again soon — this protocol
