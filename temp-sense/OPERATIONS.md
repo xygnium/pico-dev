@@ -21,13 +21,8 @@ The collector runs continuously as the `temp-collector` container, polling
 on its own schedule — currently every 30 minutes
 (`~/containers/temp-collector/config/collector.conf`'s `interval_seconds`,
 editable live, no restart needed). Day to day, there's nothing to invoke
-by hand:
-
-```
-cd ~/containers/temp-collector
-./ctl.sh status                    # is it up?
-podman logs -f temp-collector      # watch it poll in real time
-```
+by hand — see `~/containers/temp-collector/README.md`'s "Operating: the
+short version" for `ctl.sh`/`podman logs` commands (not repeated here).
 
 Readings land in `data/temp_sense.db` (SQLite): a `readings` table
 (columns: `timestamp_epoch, label, timestamp_utc, temp_c, valid`) and a
@@ -71,24 +66,17 @@ sensor locations" below.
 
 ### Reading sensor locations
 
-Works whether the container is running or not, since it's just writing to
-the same bind-mounted database file:
-```
-cd ~/repos/pico-dev/temp-sense
-./collector.py --table --db-path ~/containers/temp-collector/data/temp_sense.db
-```
-Or, if you'd rather stay inside the running container:
-```
-podman exec temp-collector python3 /app/temp-sense/collector.py --table \
-  --db-path /app/data/temp_sense.db --config-path /app/config/collector.conf
-```
+Fetches the device's current persistent sensor table (index, romcode,
+label) into the `sensors` table and exits — it does not pull readings.
+It's a full replace, not a merge (the device's table is the source of
+truth). Run it once before the first pull, and again after adding a
+sensor or relabeling one (see "Adding a new sensor" below); it's never
+fetched automatically as part of a normal pull.
 
-Either fetches the device's current persistent sensor table (index,
-romcode, label) into the `sensors` table and exits — it does not pull
-readings. It's a full replace, not a merge (the device's table is the
-source of truth). Run it once before the first pull, and again after
-adding a sensor or relabeling one (see "Adding a new sensor" below); it's
-never fetched automatically as part of a normal pull.
+For the exact command (podman-exec vs. running `collector.py` directly on
+the host, and the container-running caveats for each), see
+`~/containers/temp-collector/README.md`'s "First-time setup / after
+adding a sensor" section — not repeated here.
 
 ## Sample rate & retention
 
