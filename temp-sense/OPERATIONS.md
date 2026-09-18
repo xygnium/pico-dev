@@ -170,9 +170,7 @@ Steps:
 
 ## Command reference
 
-All of these are sent as `udp_client.py <command>` (see the intro above)
-— the table lists the command name/args you pass to `udp_client.py`, not
-raw wire bytes.
+All of these are sent as `udp_client.py <command>` (see the intro above).
 
 | `udp_client.py` command | Effect |
 |---|---|
